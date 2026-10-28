@@ -110,6 +110,22 @@ fn create_temp_directory() -> Result<PathBuf, String> {
 }
 
 fn read_pdf(data: &[u8]) -> Result<ExtractedText, String> {
+    with_pdf_file(data, extract_text_with_quality)
+}
+
+pub(crate) async fn validate_pdf(data: &[u8]) -> Result<(), String> {
+    let data = data.to_vec();
+    tauri::async_runtime::spawn_blocking(move || {
+        with_pdf_file(&data, |path| extract_text(path).map(|_| ()))
+    })
+    .await
+    .map_err(|error| format!("PDF validation failed: {error}"))?
+}
+
+fn with_pdf_file<T>(
+    data: &[u8],
+    operation: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<T, String> {
     if !data.starts_with(b"%PDF-") {
         return Err("The selected file is not a PDF.".into());
     }
@@ -117,7 +133,7 @@ fn read_pdf(data: &[u8]) -> Result<ExtractedText, String> {
     let path = directory.join("input.pdf");
     let result = fs::write(&path, data)
         .map_err(|error| format!("Could not prepare PDF for reading: {error}"))
-        .and_then(|()| extract_text_with_quality(&path));
+        .and_then(|()| operation(&path));
     match fs::remove_dir_all(&directory) {
         Ok(()) => result,
         Err(error) => Err(format!(
@@ -241,6 +257,28 @@ fn extract_pdf_text(path: &Path, program: &Path) -> Result<(String, Option<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validates_readable_pdfs_without_requiring_extractable_text() {
+        tauri::async_runtime::block_on(async {
+            for data in [
+                include_bytes!("../tests/fixtures/sample.pdf").as_slice(),
+                include_bytes!("../tests/fixtures/searchable.pdf").as_slice(),
+            ] {
+                validate_pdf(data).await.unwrap();
+            }
+            let blank = String::from_utf8(include_bytes!("../tests/fixtures/sample.pdf").to_vec())
+                .unwrap()
+                .replace("(Hello PDF)", "(         )");
+            assert!(
+                with_pdf_file(blank.as_bytes(), extract_text)
+                    .unwrap()
+                    .trim()
+                    .is_empty()
+            );
+            validate_pdf(blank.as_bytes()).await.unwrap();
+        });
+    }
 
     #[test]
     fn recovers_from_pdf_text_failures_and_preserves_valid_partial_text() {
