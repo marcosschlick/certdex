@@ -1,4 +1,5 @@
 mod database;
+mod document;
 mod profile;
 
 use tauri::Manager;
@@ -8,7 +9,8 @@ pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             profile::get_profile,
-            profile::save_profile
+            profile::save_profile,
+            document::hash_pdf
         ])
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
