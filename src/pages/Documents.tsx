@@ -21,6 +21,7 @@ function Documents() {
   const [saving, setSaving] = useState(false);
   const [documents, setDocuments] = useState<DocumentItem[] | null>(null);
   const [listError, setListError] = useState("");
+  const [openError, setOpenError] = useState("");
   const [filter, setFilter] = useState("");
   const [revision, setRevision] = useState(0);
   const selection = useRef(0);
@@ -104,6 +105,15 @@ function Documents() {
 
   const visibleDocuments = documents?.filter((document) => !filter || document.type === filter);
 
+  async function openPdf(id: number) {
+    setOpenError("");
+    try {
+      await window.__TAURI__.core.invoke("open_document_pdf", { id });
+    } catch {
+      setOpenError("Could not open the PDF. Check that the file is available.");
+    }
+  }
+
   return (
     <section className="profile">
       <h1>Documents</h1>
@@ -122,7 +132,7 @@ function Documents() {
           ) : (
             <div className="documents-table">
               <table>
-                <thead><tr><th>Title</th><th>Type</th><th>Issue date</th><th>Workload (hours)</th></tr></thead>
+                <thead><tr><th>Title</th><th>Type</th><th>Issue date</th><th>Workload (hours)</th><th>PDF</th></tr></thead>
                 <tbody>
                   {visibleDocuments?.map((document) => (
                     <tr key={document.id}>
@@ -130,6 +140,7 @@ function Documents() {
                       <td>{document.type}</td>
                       <td>{document.issue_date || "—"}</td>
                       <td>{document.workload_hours ?? "—"}</td>
+                      <td><button type="button" className="open-pdf" onClick={() => openPdf(document.id)} aria-label={`Open PDF for ${document.title || `document ${document.id}`}`}>Open PDF</button></td>
                     </tr>
                   ))}
                 </tbody>
@@ -137,6 +148,7 @@ function Documents() {
             </div>
           )
         )}
+        {openError && <p role="alert">{openError}</p>}
       </section>
       <h2 className="document-form-heading">Register a document</h2>
       <form onSubmit={handleSubmit}>

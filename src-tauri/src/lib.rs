@@ -13,7 +13,8 @@ pub fn run() {
             document::hash_pdf,
             document::document_hash_exists,
             document::store_document_pdf,
-            document::list_documents
+            document::list_documents,
+            document::open_document_pdf
         ])
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;

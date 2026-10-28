@@ -107,6 +107,57 @@ pub(crate) async fn list_documents(
         .map_err(|error| error.to_string())
 }
 
+async fn document_pdf_path(pool: &SqlitePool, root: &Path, id: i64) -> Result<PathBuf, String> {
+    let stored_path: Option<String> =
+        sqlx::query_scalar("SELECT file_path FROM documents WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|error| error.to_string())?
+            .flatten();
+    let path = stored_path.ok_or("PDF not found for this document.")?;
+    let directory = root
+        .join("documents")
+        .canonicalize()
+        .map_err(|_| "PDF folder not found.")?;
+    let path = Path::new(&path)
+        .canonicalize()
+        .map_err(|_| "PDF file not found.")?;
+    if !path.starts_with(directory)
+        || !path.is_file()
+        || !path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+    {
+        return Err("Invalid PDF file path.".into());
+    }
+    Ok(path)
+}
+
+#[tauri::command]
+pub(crate) async fn open_document_pdf(
+    app: tauri::AppHandle,
+    pool: State<'_, SqlitePool>,
+    id: i64,
+) -> Result<(), String> {
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let path = document_pdf_path(&pool, &root, id).await?;
+    #[cfg(target_os = "windows")]
+    let program = "explorer";
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let program = "xdg-open";
+    std::process::Command::new(program)
+        .arg(path)
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub(crate) async fn document_hash_exists(
     pool: State<'_, SqlitePool>,
@@ -170,6 +221,38 @@ mod tests {
             assert_eq!(documents[1].title.as_deref(), Some("Rust"));
             assert_eq!(documents[1].issue_date.as_deref(), Some("2026-01-01"));
             assert_eq!(documents[1].workload_hours, Some(12.5));
+        });
+    }
+
+    #[test]
+    fn resolves_only_existing_managed_pdfs() {
+        tauri::async_runtime::block_on(async {
+            let root = std::env::temp_dir().join(format!(
+                "open-test-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+            crate::database::create_tables(&pool).await.unwrap();
+            let path = store_pdf(&root, b"%PDF-test", "course", "2026", "test").unwrap();
+            sqlx::query("INSERT INTO documents (id, type, file_path) VALUES (1, 'course', ?), (2, 'course', ?), (3, 'course', NULL)")
+                .bind(path.to_string_lossy().as_ref())
+                .bind(root.join("outside.pdf").to_string_lossy().as_ref())
+                .execute(&pool).await.unwrap();
+            fs::write(root.join("outside.pdf"), b"%PDF-test").unwrap();
+            assert_eq!(
+                document_pdf_path(&pool, &root, 1).await.unwrap(),
+                path.canonicalize().unwrap()
+            );
+            assert!(document_pdf_path(&pool, &root, 2).await.is_err());
+            assert!(document_pdf_path(&pool, &root, 3).await.is_err());
+            assert!(document_pdf_path(&pool, &root, 4).await.is_err());
+            fs::remove_file(path).unwrap();
+            assert!(document_pdf_path(&pool, &root, 1).await.is_err());
+            fs::remove_dir_all(root).unwrap();
         });
     }
 

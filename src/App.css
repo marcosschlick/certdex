@@ -267,3 +267,19 @@ h1 {
 .documents-table th {
   white-space: nowrap;
 }
+
+.open-pdf {
+  padding: 6px 10px;
+  border: 1px solid #327de1;
+  border-radius: 6px;
+  background: transparent;
+  color: #f8f8f8;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.open-pdf:focus-visible {
+  outline: 2px solid #327de1;
+  outline-offset: 2px;
+}
