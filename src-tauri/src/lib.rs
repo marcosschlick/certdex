@@ -1,7 +1,7 @@
 mod database;
 mod document;
 pub mod document_analysis;
-mod ollama;
+pub mod ollama;
 pub mod pdf;
 mod profile;
 
