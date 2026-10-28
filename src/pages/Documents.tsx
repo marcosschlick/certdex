@@ -40,6 +40,7 @@ function Documents() {
   const [filter, setFilter] = useState("");
   const [revision, setRevision] = useState(0);
   const selection = useRef(0);
+  const fileInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     let active = true;
@@ -67,7 +68,8 @@ function Documents() {
     setReadingStatus("");
     setAnalysis(null);
     setAnalysisStatus("");
-    setFormValues((current) => applyDocumentAnalysis(current, editedFields.current, null));
+    editedFields.current.clear();
+    setFormValues(emptyDocumentForm);
     if (!file) return;
     if (!file.name.toLowerCase().endsWith(".pdf")) {
       event.target.value = "";
@@ -84,10 +86,6 @@ function Documents() {
       const exists = await window.__TAURI__.core.invoke<boolean>("document_hash_exists", { hash });
       if (selected === selection.current) {
         setFileStatus(exists ? `This file has already been registered.\nSHA-256: ${hash}` : `SHA-256: ${hash}`);
-        if (!exists) {
-          setFile(file);
-          setReady(true);
-        }
       }
       if (selected !== selection.current) return;
       setReadingStatus("Reading PDF…");
@@ -115,6 +113,11 @@ function Documents() {
           }
         } catch (error) {
           if (selected === selection.current) setAnalysisStatus(typeof error === "string" ? error : "Could not analyze the document.");
+        } finally {
+          if (selected === selection.current && !exists) {
+            setFile(file);
+            setReady(true);
+          }
         }
       } catch (error) {
         if (selected === selection.current) setReadingStatus(typeof error === "string" ? error : "Could not read the PDF.");
@@ -154,6 +157,13 @@ function Documents() {
         },
       });
       setReady(false);
+      setFile(null);
+      setFileName("");
+      setFormValues(emptyDocumentForm);
+      editedFields.current.clear();
+      setReading(null);
+      setAnalysis(null);
+      if (fileInput.current) fileInput.current.value = "";
       setFileStatus(`Document registered: ${path}`);
       setRevision((current) => current + 1);
     } catch (error) {
@@ -230,7 +240,7 @@ function Documents() {
           <label><span>Country</span><input name="country" value={formValues.country} onChange={handleFieldChange} /></label>
           <label><span>Validation code</span><input name="validation_code" value={formValues.validation_code} onChange={handleFieldChange} /></label>
           <label className="profile-field-wide"><span>Validation URL</span><input name="validation_url" value={formValues.validation_url} onChange={handleFieldChange} type="url" /></label>
-          <label className="profile-field-wide"><span>PDF file</span><input type="file" accept=".pdf,application/pdf" onChange={handleFileChange} /></label>
+          <label className="profile-field-wide"><span>PDF file</span><input ref={fileInput} type="file" accept=".pdf,application/pdf" onChange={handleFileChange} /></label>
         </fieldset>
         {analysisStatus && <p role="status">{analysisStatus}</p>}
         <div className="document-file" aria-live="polite">
