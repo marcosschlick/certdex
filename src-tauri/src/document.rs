@@ -128,6 +128,136 @@ mod tests {
             assert!(!contains_hash(&pool, "different-hash").await.unwrap());
         });
     }
+
+    #[test]
+    fn stores_pdfs_with_safe_unique_names() {
+        let root = std::env::temp_dir().join(format!(
+            "documents-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let first = store_pdf(&root, b"%PDF-first", "course", "2026", "../My: Course").unwrap();
+        let second = store_pdf(&root, b"%PDF-second", "course", "2026", "../My: Course").unwrap();
+        assert_eq!(
+            first,
+            root.join("documents/2026/course/2026-course-my--course.pdf")
+        );
+        assert_eq!(
+            second,
+            root.join("documents/2026/course/2026-course-my--course-1.pdf")
+        );
+        assert_eq!(fs::read(first).unwrap(), b"%PDF-first");
+        assert_eq!(fs::read(second).unwrap(), b"%PDF-second");
+        assert!(store_pdf(&root, b"%PDF-", "../course", "2026", "Title").is_err());
+        assert!(store_pdf(&root, b"%PDF-", "course", "../x", "Title").is_err());
+        assert!(store_pdf(&root, b"invalid", "course", "2026", "Title").is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
 }
 use sqlx::SqlitePool;
-use tauri::State;
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+};
+use tauri::{Manager, State};
+
+fn store_pdf(
+    root: &Path,
+    data: &[u8],
+    document_type: &str,
+    year: &str,
+    title: &str,
+) -> Result<PathBuf, String> {
+    if !data.starts_with(b"%PDF-") {
+        return Err("The selected file is not a PDF.".into());
+    }
+    if ![
+        "certificate",
+        "course",
+        "article",
+        "proceedings",
+        "presentation",
+        "event",
+        "award",
+        "project",
+        "internship",
+        "monitoring",
+        "other",
+    ]
+    .contains(&document_type)
+    {
+        return Err("Invalid document type.".into());
+    }
+    if year != "unknown" && (year.len() != 4 || !year.bytes().all(|byte| byte.is_ascii_digit())) {
+        return Err("Invalid year.".into());
+    }
+    let title: String = title
+        .chars()
+        .take(80)
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let title = title.trim_matches('-');
+    let title = if title.is_empty() { "document" } else { title };
+    let directory = root.join("documents").join(year).join(document_type);
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let base = format!("{year}-{document_type}-{title}");
+    for number in 0u32.. {
+        let name = if number == 0 {
+            format!("{base}.pdf")
+        } else {
+            format!("{base}-{number}.pdf")
+        };
+        let path = directory.join(name);
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                if let Err(error) = file.write_all(data) {
+                    drop(file);
+                    let _ = fs::remove_file(&path);
+                    return Err(error.to_string());
+                }
+                return Ok(path);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Err("Could not create a unique filename.".into())
+}
+
+#[tauri::command]
+pub(crate) async fn store_document_pdf(
+    app: tauri::AppHandle,
+    pool: State<'_, SqlitePool>,
+    data: Vec<u8>,
+    document_type: String,
+    year: String,
+    title: String,
+) -> Result<String, String> {
+    let hash = hash_pdf(data.clone())?;
+    if contains_hash(&pool, &hash)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Err("This file has already been registered.".into());
+    }
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let path = store_pdf(&root, &data, &document_type, &year, &title)?;
+    Ok(path.to_string_lossy().into_owned())
+}

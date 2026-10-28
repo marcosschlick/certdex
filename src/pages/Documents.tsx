@@ -1,4 +1,4 @@
-import { useRef, useState, type ChangeEvent } from "react";
+import { useRef, useState, type ChangeEvent, type FormEvent } from "react";
 
 const documentTypes = [
   "certificate", "course", "article", "proceedings", "presentation", "event",
@@ -8,11 +8,16 @@ const documentTypes = [
 function Documents() {
   const [fileName, setFileName] = useState("");
   const [fileStatus, setFileStatus] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [ready, setReady] = useState(false);
+  const [saving, setSaving] = useState(false);
   const selection = useRef(0);
 
   async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const selected = ++selection.current;
     const file = event.target.files?.[0];
+    setFile(null);
+    setReady(false);
     setFileName("");
     setFileStatus("");
     if (!file) return;
@@ -31,17 +36,45 @@ function Documents() {
       const exists = await window.__TAURI__.core.invoke<boolean>("document_hash_exists", { hash });
       if (selected === selection.current) {
         setFileStatus(exists ? `This file has already been registered.\nSHA-256: ${hash}` : `SHA-256: ${hash}`);
+        if (!exists) {
+          setFile(file);
+          setReady(true);
+        }
       }
     } catch {
       if (selected === selection.current) setFileStatus("Could not process the PDF. Check the file and try again.");
     }
   }
 
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!file || !ready || saving) return;
+    const form = new FormData(event.currentTarget);
+    const date = String(form.get("issue_date") || form.get("start_date") || form.get("end_date") || "");
+    setSaving(true);
+    setFileStatus("Saving PDF…");
+    try {
+      const data = Array.from(new Uint8Array(await file.arrayBuffer()));
+      const path = await window.__TAURI__.core.invoke<string>("store_document_pdf", {
+        data,
+        documentType: form.get("type"),
+        year: date ? date.slice(0, 4) : "unknown",
+        title: form.get("title"),
+      });
+      setReady(false);
+      setFileStatus(`PDF saved locally: ${path}`);
+    } catch (error) {
+      setFileStatus(typeof error === "string" ? error : "Could not save the PDF. Please try again.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <section className="profile">
       <h1>Documents</h1>
-      <form onSubmit={(event) => event.preventDefault()}>
-        <fieldset className="profile-fields">
+      <form onSubmit={handleSubmit}>
+        <fieldset className="profile-fields" disabled={saving}>
           <label>
             <span>Document type</span>
             <select name="type" defaultValue="certificate">
@@ -63,6 +96,9 @@ function Documents() {
         <div className="document-file" aria-live="polite">
           {fileName && <p>Selected file: {fileName}</p>}
           {fileStatus && <p>{fileStatus}</p>}
+        </div>
+        <div className="profile-actions">
+          <button type="submit" disabled={!ready || saving}>{saving ? "Saving…" : "Save PDF"}</button>
         </div>
       </form>
     </section>

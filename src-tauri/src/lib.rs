@@ -11,7 +11,8 @@ pub fn run() {
             profile::get_profile,
             profile::save_profile,
             document::hash_pdf,
-            document::document_hash_exists
+            document::document_hash_exists,
+            document::store_document_pdf
         ])
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
