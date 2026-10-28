@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "type": ["string", "null"],
+      "enum": ["certificate", "course", "article", "proceedings", "presentation", "event", "award", "project", "internship", "monitoring", "other", null]
+    },
+    "title": { "type": ["string", "null"] },
+    "role": { "type": ["string", "null"] },
+    "issue_date": { "type": ["string", "null"] },
+    "start_date": { "type": ["string", "null"] },
+    "end_date": { "type": ["string", "null"] },
+    "workload_hours": { "type": ["number", "null"] },
+    "city": { "type": ["string", "null"] },
+    "country": { "type": ["string", "null"] },
+    "validation_code": { "type": ["string", "null"] },
+    "validation_url": { "type": ["string", "null"] }
+  }
+}
