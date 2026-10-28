@@ -19,6 +19,7 @@ pub fn run() {
             document::list_documents,
             pdf::read_selected_pdf,
             ollama::check_ollama,
+            ollama::analyze_pdf_text,
             document::open_document_pdf
         ])
         .setup(|app| {

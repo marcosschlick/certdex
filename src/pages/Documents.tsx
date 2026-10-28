@@ -20,6 +20,20 @@ type PdfReading = {
   has_sufficient_text: boolean;
 };
 
+type DocumentAnalysis = {
+  type: string | null;
+  title: string | null;
+  role: string | null;
+  issue_date: string | null;
+  start_date: string | null;
+  end_date: string | null;
+  workload_hours: number | null;
+  city: string | null;
+  country: string | null;
+  validation_code: string | null;
+  validation_url: string | null;
+};
+
 function Documents() {
   const [fileName, setFileName] = useState("");
   const [fileStatus, setFileStatus] = useState("");
@@ -28,6 +42,8 @@ function Documents() {
   const [saving, setSaving] = useState(false);
   const [reading, setReading] = useState<PdfReading | null>(null);
   const [readingStatus, setReadingStatus] = useState("");
+  const [analysis, setAnalysis] = useState<DocumentAnalysis | null>(null);
+  const [analysisStatus, setAnalysisStatus] = useState("");
   const [documents, setDocuments] = useState<DocumentItem[] | null>(null);
   const [listError, setListError] = useState("");
   const [openError, setOpenError] = useState("");
@@ -52,6 +68,8 @@ function Documents() {
     setFileStatus("");
     setReading(null);
     setReadingStatus("");
+    setAnalysis(null);
+    setAnalysisStatus("");
     if (!file) return;
     if (!file.name.toLowerCase().endsWith(".pdf")) {
       event.target.value = "";
@@ -80,6 +98,17 @@ function Documents() {
         if (selected === selection.current) {
           setReading(result);
           setReadingStatus("");
+        }
+        if (selected !== selection.current) return;
+        setAnalysisStatus("Analyzing document…");
+        try {
+          const analysisResult = await window.__TAURI__.core.invoke<DocumentAnalysis>("analyze_pdf_text", { text: result.text });
+          if (selected === selection.current) {
+            setAnalysis(analysisResult);
+            setAnalysisStatus("");
+          }
+        } catch (error) {
+          if (selected === selection.current) setAnalysisStatus(typeof error === "string" ? error : "Could not analyze the document.");
         }
       } catch (error) {
         if (selected === selection.current) setReadingStatus(typeof error === "string" ? error : "Could not read the PDF.");
@@ -210,6 +239,11 @@ function Documents() {
           <pre>{reading.text || "No text extracted."}</pre>
         </>}
         {!reading && !readingStatus && <p>Select a PDF to inspect its extracted text.</p>}
+        {reading && <>
+          <h2>Document analysis (debug)</h2>
+          {analysisStatus && <p role="status">{analysisStatus}</p>}
+          {analysis && <pre>{JSON.stringify(analysis, null, 2)}</pre>}
+        </>}
       </section>
     </section>
   );
