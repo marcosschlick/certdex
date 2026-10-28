@@ -19,6 +19,8 @@ pub fn run() {
             document::document_hash_exists,
             document::store_document_pdf,
             document::list_documents,
+            document::list_academic_options,
+            document::update_document,
             pdf::read_selected_pdf,
             ollama::check_ollama,
             ollama::analyze_pdf_text,

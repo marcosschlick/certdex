@@ -26,3 +26,23 @@ export function applyDocumentAnalysis(current: DocumentForm, edited: ReadonlySet
   }
   return result;
 }
+
+type FilterableDocument = {
+  type: string;
+  title: string | null;
+  role: string | null;
+  city: string | null;
+  country: string | null;
+  issue_date: string | null;
+  start_date: string | null;
+  end_date: string | null;
+  tags: string[];
+};
+
+export function matchesDocumentFilters(document: FilterableDocument, search: string, type: string, year: string, tag: string): boolean {
+  const query = search.trim().toLocaleLowerCase();
+  return (!type || document.type === type)
+    && (!year || (document.issue_date || document.start_date || document.end_date || "").startsWith(year))
+    && (!tag || document.tags.includes(tag))
+    && (!query || [document.title, document.role, document.city, document.country].some((value) => value?.toLocaleLowerCase().includes(query)));
+}

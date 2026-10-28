@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyDocumentAnalysis, emptyDocumentForm } from "../src/documentForm.ts";
+import { applyDocumentAnalysis, emptyDocumentForm, matchesDocumentFilters } from "../src/documentForm.ts";
 
 test("fills identified fields without replacing manual edits", () => {
   const current = { ...emptyDocumentForm, title: "My title", city: "" };
@@ -21,4 +21,16 @@ test("fills identified fields without replacing manual edits", () => {
   assert.equal(reset.city, "");
   assert.equal(reset.type, "");
   assert.equal(reset.country, "");
+});
+
+test("filters documents by text, type, year and tag together", () => {
+  const document = { type: "course", title: "Rust Course", role: "Speaker", city: "Recife", country: "Brazil", issue_date: null, start_date: "2025-02-01", end_date: null, tags: ["Programming"] };
+  for (const query of ["rust", "SPEAKER", "recife", "brazil"]) {
+    assert.equal(matchesDocumentFilters(document, query, "course", "2025", "Programming"), true);
+  }
+  assert.equal(matchesDocumentFilters(document, "missing", "", "", ""), false);
+  assert.equal(matchesDocumentFilters(document, "", "article", "", ""), false);
+  assert.equal(matchesDocumentFilters(document, "", "", "2024", ""), false);
+  assert.equal(matchesDocumentFilters(document, "", "", "", "Other"), false);
+  assert.equal(matchesDocumentFilters({ ...document, title: null, role: null, city: null, country: null }, "x", "", "", ""), false);
 });

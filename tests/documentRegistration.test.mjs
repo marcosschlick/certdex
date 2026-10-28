@@ -4,9 +4,10 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import ts from "typescript";
 
-function createDocuments(invoke) {
+function createDocuments(invoke, runEffects = false) {
   const hooks = [];
   let index = 0;
+  let effectsStarted = false;
   const react = {
     useState(initial) {
       const position = index++;
@@ -19,7 +20,7 @@ function createDocuments(invoke) {
       const position = index++;
       return hooks[position] ??= { current: initial };
     },
-    useEffect() {},
+    useEffect(effect) { if (runEffects && !effectsStarted) effect(); },
   };
   const jsx = (type, props) => ({ type, props: props ?? {} });
   const formModule = { exports: {} };
@@ -43,7 +44,9 @@ function createDocuments(invoke) {
   vm.runInNewContext(source("../src/pages/Documents.tsx"), context);
   function render() {
     index = 0;
-    return componentModule.exports.default();
+    const result = componentModule.exports.default();
+    effectsStarted = true;
+    return result;
   }
   function find(predicate) {
     const visit = (node) => {
@@ -98,6 +101,44 @@ test("registration waits for processing and rejects failed PDF reads", async () 
   failure.reject("Invalid PDF");
   await failedProcessing;
   assert.equal(registerButton(failedView).props.disabled, true);
+});
+
+test("edits an existing document with its associations", async () => {
+  const existing = { id: 5, type: "course", title: "Existing", role: "Speaker", issue_date: "2025-01-01", start_date: null, end_date: null, workload_hours: 12, city: "Recife", country: "Brazil", validation_code: null, validation_url: null, organization: "University", event: "Congress", people: [{ name: "Ada", role: "Author" }], tags: ["Research"] };
+  let updated;
+  const view = createDocuments((command, args) => {
+    if (command === "list_documents") return Promise.resolve([existing]);
+    if (command === "list_academic_options") return Promise.resolve({ organizations: [], events: [], people: [], tags: ["Research"] });
+    if (command === "update_document") { updated = args; return Promise.resolve(); }
+    throw new Error(command);
+  }, true);
+  view.find(() => false);
+  await new Promise(setImmediate);
+  view.find((node) => node.type === "button" && node.props["aria-label"] === "Edit Existing").props.onClick();
+  assert.equal(titleInput(view).props.value, "Existing");
+  await view.find((node) => node.type === "form").props.onSubmit({ preventDefault() {}, currentTarget: {} });
+  assert.equal(updated.id, 5);
+  assert.equal(updated.data, null);
+  assert.equal(updated.document.organization, "University");
+  assert.equal(updated.document.event, "Congress");
+  assert.equal(updated.document.people[0].role, "Author");
+  assert.equal(updated.document.tags[0], "Research");
+  assert.equal(titleInput(view).props.value, "");
+});
+
+test("filtered documents determine the displayed workload", async () => {
+  const base = { type: "course", role: null, issue_date: "2025-01-01", start_date: null, end_date: null, city: null, country: null, tags: [], workload_hours: 3 };
+  const view = createDocuments((command) => {
+    if (command === "list_documents") return Promise.resolve([{ ...base, id: 1, title: "Rust" }, { ...base, id: 2, title: "Math", workload_hours: 5 }]);
+    if (command === "list_academic_options") return Promise.resolve({ organizations: [], events: [], people: [], tags: [] });
+    throw new Error(command);
+  }, true);
+  view.find(() => false);
+  await new Promise(setImmediate);
+  const total = () => view.find((node) => node.type === "p" && node.props.children?.[0] === "Total workload: ").props.children[1];
+  assert.equal(total(), 8);
+  view.find((node) => node.type === "input" && node.props.type === "search").props.onChange({ target: { value: "rust" } });
+  assert.equal(total(), 3);
 });
 
 test("changing PDFs and successful registration clear document fields", async () => {

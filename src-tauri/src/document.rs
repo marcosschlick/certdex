@@ -88,14 +88,58 @@ pub(crate) struct DocumentListItem {
     r#type: String,
     issue_date: Option<String>,
     workload_hours: Option<f64>,
+    role: Option<String>,
+    start_date: Option<String>,
+    end_date: Option<String>,
+    city: Option<String>,
+    country: Option<String>,
+    validation_code: Option<String>,
+    validation_url: Option<String>,
+    organization: Option<String>,
+    event: Option<String>,
+    #[sqlx(skip)]
+    people: Vec<PersonInput>,
+    #[sqlx(skip)]
+    tags: Vec<String>,
 }
 
 async fn load_documents(pool: &SqlitePool) -> Result<Vec<DocumentListItem>, sqlx::Error> {
-    sqlx::query_as(
-        "SELECT id, title, type, issue_date, workload_hours FROM documents ORDER BY id DESC",
-    )
-    .fetch_all(pool)
-    .await
+    let mut documents: Vec<DocumentListItem> = sqlx::query_as(
+        "SELECT d.id, d.title, d.type, d.issue_date, d.workload_hours, d.role, d.start_date, d.end_date, d.city, d.country, d.validation_code, d.validation_url, o.name AS organization, e.name AS event FROM documents d LEFT JOIN organizations o ON o.id = d.organization_id LEFT JOIN events e ON e.id = d.event_id ORDER BY d.id DESC",
+    ).fetch_all(pool).await?;
+    for document in &mut documents {
+        document.people = sqlx::query_as("SELECT p.name, dp.role FROM document_people dp JOIN people p ON p.id = dp.person_id WHERE dp.document_id = ? ORDER BY p.name")
+            .bind(document.id).fetch_all(pool).await?;
+        document.tags = sqlx::query_scalar("SELECT t.name FROM document_tags dt JOIN tags t ON t.id = dt.tag_id WHERE dt.document_id = ? ORDER BY t.name")
+            .bind(document.id).fetch_all(pool).await?;
+    }
+    Ok(documents)
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct AcademicOptions {
+    organizations: Vec<String>,
+    events: Vec<String>,
+    people: Vec<String>,
+    tags: Vec<String>,
+}
+
+#[tauri::command]
+pub(crate) async fn list_academic_options(
+    pool: State<'_, SqlitePool>,
+) -> Result<AcademicOptions, String> {
+    async fn names(pool: &SqlitePool, query: &'static str) -> Result<Vec<String>, String> {
+        sqlx::query_scalar(query)
+            .fetch_all(pool)
+            .await
+            .map_err(|error| error.to_string())
+    }
+    Ok(AcademicOptions {
+        organizations: names(&pool, "SELECT name FROM organizations ORDER BY name").await?,
+        events: names(&pool, "SELECT name FROM events ORDER BY name").await?,
+        people: names(&pool, "SELECT name FROM people ORDER BY name").await?,
+        tags: names(&pool, "SELECT name FROM tags ORDER BY name").await?,
+    })
 }
 
 #[tauri::command]
@@ -162,10 +206,20 @@ pub(crate) async fn open_document_pdf(
 pub(crate) async fn document_hash_exists(
     pool: State<'_, SqlitePool>,
     hash: String,
+    exclude_id: Option<i64>,
 ) -> Result<bool, String> {
-    contains_hash(&pool, &hash)
-        .await
-        .map_err(|error| error.to_string())
+    if let Some(id) = exclude_id {
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM documents WHERE file_hash = ? AND id != ?)")
+            .bind(hash)
+            .bind(id)
+            .fetch_one(&*pool)
+            .await
+            .map_err(|error| error.to_string())
+    } else {
+        contains_hash(&pool, &hash)
+            .await
+            .map_err(|error| error.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -312,6 +366,10 @@ mod tests {
                 validation_url: Some("https://example.com".into()),
                 original_filename: "original.pdf".into(),
                 extracted_text: "Extracted text\nwith accents: ação".into(),
+                organization: None,
+                event: None,
+                people: vec![],
+                tags: vec![],
             };
             let path = register_document(&root, &pool, b"%PDF-first", &document)
                 .await
@@ -352,6 +410,107 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(count, 1);
+            fs::remove_dir_all(root).unwrap();
+        });
+    }
+
+    #[test]
+    fn saves_and_updates_associations_and_preserves_or_replaces_pdf() {
+        tauri::async_runtime::block_on(async {
+            let root = std::env::temp_dir().join(format!(
+                "academic-test-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+            crate::database::create_tables(&pool).await.unwrap();
+            let mut document: DocumentInput = serde_json::from_value(serde_json::json!({
+                "document_type": "course", "title": "First", "original_filename": "first.pdf",
+                "extracted_text": "original text", "organization": "University", "event": "Congress",
+                "people": [{"name": "Ada", "role": "Author"}], "tags": ["Rust", "rust"]
+            })).unwrap();
+            let original = register_document(&root, &pool, b"%PDF-first", &document)
+                .await
+                .unwrap();
+            let list = load_documents(&pool).await.unwrap();
+            assert_eq!(list[0].organization.as_deref(), Some("University"));
+            assert_eq!(list[0].event.as_deref(), Some("Congress"));
+            assert_eq!(list[0].people[0].role, "Author");
+            assert_eq!(list[0].tags, ["Rust"]);
+
+            document.title = Some("Updated".into());
+            document.organization = Some("university".into());
+            document.people[0].role = "Speaker".into();
+            document.tags = vec!["Research".into()];
+            document.extracted_text = "must not overwrite".into();
+            update_document_record(&root, &pool, list[0].id, &document, None)
+                .await
+                .unwrap();
+            let updated = load_documents(&pool).await.unwrap();
+            assert_eq!(updated[0].title.as_deref(), Some("Updated"));
+            assert_eq!(updated[0].people[0].role, "Speaker");
+            assert_eq!(updated[0].tags, ["Research"]);
+            assert_eq!(
+                sqlx::query_scalar::<_, String>(
+                    "SELECT extracted_text FROM documents WHERE id = ?"
+                )
+                .bind(list[0].id)
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+                "original text"
+            );
+            assert!(original.exists());
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM organizations")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap(),
+                1
+            );
+
+            document.people.push(PersonInput {
+                name: "ada".into(),
+                role: "Author".into(),
+            });
+            document.title = Some("Should roll back".into());
+            assert!(
+                update_document_record(&root, &pool, list[0].id, &document, None)
+                    .await
+                    .is_err()
+            );
+            let unchanged = load_documents(&pool).await.unwrap();
+            assert_eq!(unchanged[0].title.as_deref(), Some("Updated"));
+            assert_eq!(unchanged[0].people[0].role, "Speaker");
+            document.people.pop();
+
+            document.original_filename = "replacement.pdf".into();
+            document.extracted_text = "replacement text".into();
+            update_document_record(
+                &root,
+                &pool,
+                list[0].id,
+                &document,
+                Some(b"%PDF-replacement"),
+            )
+            .await
+            .unwrap();
+            let replacement = document_pdf_path(&pool, &root, list[0].id).await.unwrap();
+            assert!(!original.exists());
+            assert_eq!(fs::read(replacement).unwrap(), b"%PDF-replacement");
+            assert_eq!(
+                sqlx::query_scalar::<_, String>(
+                    "SELECT extracted_text FROM documents WHERE id = ?"
+                )
+                .bind(list[0].id)
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+                "replacement text"
+            );
             fs::remove_dir_all(root).unwrap();
         });
     }
@@ -452,6 +611,136 @@ pub(crate) struct DocumentInput {
     validation_url: Option<String>,
     original_filename: String,
     extracted_text: String,
+    #[serde(default)]
+    organization: Option<String>,
+    #[serde(default)]
+    event: Option<String>,
+    #[serde(default)]
+    people: Vec<PersonInput>,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, sqlx::FromRow)]
+struct PersonInput {
+    name: String,
+    role: String,
+}
+
+async fn named_id(
+    connection: &mut sqlx::SqliteConnection,
+    table: &str,
+    name: &str,
+) -> Result<i64, String> {
+    let (insert, select) = match table {
+        "organizations" => (
+            "INSERT OR IGNORE INTO organizations (name) VALUES (?)",
+            "SELECT id FROM organizations WHERE name = ? COLLATE NOCASE",
+        ),
+        "events" => (
+            "INSERT OR IGNORE INTO events (name) VALUES (?)",
+            "SELECT id FROM events WHERE name = ? COLLATE NOCASE",
+        ),
+        "people" => (
+            "INSERT OR IGNORE INTO people (name) VALUES (?)",
+            "SELECT id FROM people WHERE name = ? COLLATE NOCASE",
+        ),
+        "tags" => (
+            "INSERT OR IGNORE INTO tags (name) VALUES (?)",
+            "SELECT id FROM tags WHERE name = ? COLLATE NOCASE",
+        ),
+        _ => return Err("Invalid association type.".into()),
+    };
+    sqlx::query(insert)
+        .bind(name)
+        .execute(&mut *connection)
+        .await
+        .map_err(|error| error.to_string())?;
+    sqlx::query_scalar(select)
+        .bind(name)
+        .fetch_one(connection)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn save_associations(
+    connection: &mut sqlx::SqliteConnection,
+    id: i64,
+    document: &DocumentInput,
+) -> Result<(), String> {
+    let organization = match document
+        .organization
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        Some(name) => Some(named_id(connection, "organizations", name).await?),
+        None => None,
+    };
+    let event = match document
+        .event
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        Some(name) => Some(named_id(connection, "events", name).await?),
+        None => None,
+    };
+    sqlx::query("UPDATE documents SET organization_id = ?, event_id = ? WHERE id = ?")
+        .bind(organization)
+        .bind(event)
+        .bind(id)
+        .execute(&mut *connection)
+        .await
+        .map_err(|error| error.to_string())?;
+    sqlx::query("DELETE FROM document_people WHERE document_id = ?")
+        .bind(id)
+        .execute(&mut *connection)
+        .await
+        .map_err(|error| error.to_string())?;
+    sqlx::query("DELETE FROM document_tags WHERE document_id = ?")
+        .bind(id)
+        .execute(&mut *connection)
+        .await
+        .map_err(|error| error.to_string())?;
+    for person in &document.people {
+        let name = person.name.trim();
+        let role = person.role.trim();
+        if name.is_empty() || role.is_empty() {
+            return Err("Each person must have a name and role.".into());
+        }
+        let person_id = named_id(connection, "people", name).await?;
+        sqlx::query("INSERT INTO document_people (document_id, person_id, role) VALUES (?, ?, ?)")
+            .bind(id)
+            .bind(person_id)
+            .bind(role)
+            .execute(&mut *connection)
+            .await
+            .map_err(|error| {
+                if error
+                    .as_database_error()
+                    .is_some_and(|error| error.is_unique_violation())
+                {
+                    "A person can only be added once per document.".to_string()
+                } else {
+                    error.to_string()
+                }
+            })?;
+    }
+    for tag in &document.tags {
+        let name = tag.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let tag_id = named_id(connection, "tags", name).await?;
+        sqlx::query("INSERT OR IGNORE INTO document_tags (document_id, tag_id) VALUES (?, ?)")
+            .bind(id)
+            .bind(tag_id)
+            .execute(&mut *connection)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 async fn register_document(
@@ -513,6 +802,12 @@ async fn register_document(
         .bind(&document.extracted_text)
         .execute(&mut *transaction)
         .await;
+    let result = match result {
+        Ok(result) => {
+            save_associations(&mut transaction, result.last_insert_rowid(), document).await
+        }
+        Err(error) => Err(error.to_string()),
+    };
     if let Err(error) = result {
         if let Err(cleanup_error) = fs::remove_file(&path) {
             return Err(format!(
@@ -520,7 +815,7 @@ async fn register_document(
                 path.display()
             ));
         }
-        return Err(error.to_string());
+        return Err(error);
     }
     if let Err(error) = transaction.commit().await {
         if let Err(cleanup_error) = fs::remove_file(&path) {
@@ -532,6 +827,112 @@ async fn register_document(
         return Err(error.to_string());
     }
     Ok(path)
+}
+
+async fn update_document_record(
+    root: &Path,
+    pool: &SqlitePool,
+    id: i64,
+    document: &DocumentInput,
+    data: Option<&[u8]>,
+) -> Result<(), String> {
+    let old_path = if data.is_some() {
+        document_pdf_path(pool, root, id).await.ok()
+    } else {
+        None
+    };
+    let mut transaction = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|error| error.to_string())?;
+    let result = sqlx::query("UPDATE documents SET type = ?, title = ?, role = ?, issue_date = ?, start_date = ?, end_date = ?, workload_hours = ?, city = ?, country = ?, validation_code = ?, validation_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+        .bind(&document.document_type).bind(&document.title).bind(&document.role)
+        .bind(&document.issue_date).bind(&document.start_date).bind(&document.end_date)
+        .bind(document.workload_hours).bind(&document.city).bind(&document.country)
+        .bind(&document.validation_code).bind(&document.validation_url).bind(id)
+        .execute(&mut *transaction).await.map_err(|error| error.to_string())?;
+    if result.rows_affected() == 0 {
+        return Err("Document not found.".into());
+    }
+    save_associations(&mut transaction, id, document).await?;
+    let mut new_path = None;
+    if let Some(data) = data {
+        if !data.starts_with(b"%PDF-") {
+            return Err("The selected file is not a PDF.".into());
+        }
+        let hash = sha256(data);
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM documents WHERE file_hash = ? AND id != ?)",
+        )
+        .bind(&hash)
+        .bind(id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|error| error.to_string())?;
+        if exists {
+            return Err("This file has already been registered.".into());
+        }
+        let date = document
+            .issue_date
+            .as_deref()
+            .or(document.start_date.as_deref())
+            .or(document.end_date.as_deref());
+        let year = date.and_then(|value| value.get(..4)).unwrap_or("unknown");
+        let path = store_pdf(
+            root,
+            data,
+            &document.document_type,
+            year,
+            document.title.as_deref().unwrap_or(""),
+        )?;
+        let filename = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        let result = sqlx::query("UPDATE documents SET original_filename = ?, stored_filename = ?, file_path = ?, file_hash = ?, extracted_text = ? WHERE id = ?")
+            .bind(&document.original_filename).bind(filename).bind(path.to_string_lossy().as_ref())
+            .bind(hash).bind(&document.extracted_text).bind(id).execute(&mut *transaction).await;
+        if let Err(error) = result {
+            if let Err(cleanup_error) = fs::remove_file(&path) {
+                return Err(format!(
+                    "{error}. Could not remove {}: {cleanup_error}",
+                    path.display()
+                ));
+            }
+            return Err(error.to_string());
+        }
+        new_path = Some(path);
+    }
+    if let Err(error) = transaction.commit().await {
+        if let Some(path) = &new_path {
+            if let Err(cleanup_error) = fs::remove_file(path) {
+                return Err(format!(
+                    "{error}. Could not remove {}: {cleanup_error}",
+                    path.display()
+                ));
+            }
+        }
+        return Err(error.to_string());
+    }
+    if let Some(path) = old_path {
+        let _ = fs::remove_file(path);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn update_document(
+    app: tauri::AppHandle,
+    pool: State<'_, SqlitePool>,
+    id: i64,
+    document: DocumentInput,
+    data: Option<Vec<u8>>,
+) -> Result<(), String> {
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    update_document_record(&root, &pool, id, &document, data.as_deref()).await
 }
 
 #[tauri::command]

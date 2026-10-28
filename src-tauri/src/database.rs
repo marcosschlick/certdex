@@ -69,6 +69,16 @@ pub(crate) async fn create_tables(pool: &SqlitePool) -> Result<(), sqlx::Error> 
     )
     .execute(pool)
     .await?;
+    for statement in [
+        "CREATE TABLE IF NOT EXISTS organizations (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE)",
+        "CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE)",
+        "CREATE TABLE IF NOT EXISTS people (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE)",
+        "CREATE TABLE IF NOT EXISTS tags (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE)",
+        "CREATE TABLE IF NOT EXISTS document_people (document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE, person_id INTEGER NOT NULL REFERENCES people(id), role TEXT NOT NULL, PRIMARY KEY (document_id, person_id))",
+        "CREATE TABLE IF NOT EXISTS document_tags (document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE, tag_id INTEGER NOT NULL REFERENCES tags(id), PRIMARY KEY (document_id, tag_id))",
+    ] {
+        sqlx::query(statement).execute(pool).await?;
+    }
     Ok(())
 }
 
