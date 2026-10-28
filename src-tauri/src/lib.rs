@@ -1,6 +1,8 @@
 mod database;
 mod document;
 pub mod document_analysis;
+mod entities;
+mod managed_file;
 pub mod ollama;
 pub mod pdf;
 mod profile;

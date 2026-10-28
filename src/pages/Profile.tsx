@@ -57,7 +57,7 @@ function Profile({ setup = false, onComplete, onPhotoChange }: { setup?: boolean
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!profile || saving) return;
-    if (setup && !isProfileComplete(profile)) {
+    if (!isProfileComplete(profile)) {
       setMessage("Please complete all required fields.");
       return;
     }
@@ -67,8 +67,8 @@ function Profile({ setup = false, onComplete, onPhotoChange }: { setup?: boolean
       await window.__TAURI__.core.invoke("save_profile", { profile });
       if (setup) onComplete?.();
       else setMessage("Profile saved.");
-    } catch {
-      setMessage("Could not save the profile. Please try again.");
+    } catch (error) {
+      setMessage(typeof error === "string" ? error : "Could not save the profile. Please try again.");
     } finally {
       setSaving(false);
     }
@@ -113,7 +113,7 @@ function Profile({ setup = false, onComplete, onPhotoChange }: { setup?: boolean
                     setMessage("");
                   }} />
                 ) : (
-                  <input required={setup} type={field.name === "email" && setup ? "email" : "text"} value={profile[field.name]} onChange={(event) => {
+                  <input required={requiredProfileFields.some((name) => name === field.name)} type={field.name === "email" ? "email" : "text"} value={profile[field.name]} onChange={(event) => {
                     setProfile({ ...profile, [field.name]: event.target.value });
                     setMessage("");
                   }} />

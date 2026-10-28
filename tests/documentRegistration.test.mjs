@@ -1,63 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import vm from "node:vm";
-import ts from "typescript";
+import { createComponent } from "./componentHarness.mjs";
 
-function createDocuments(invoke, runEffects = false) {
-  const hooks = [];
-  let index = 0;
-  let effectsStarted = false;
-  const react = {
-    useState(initial) {
-      const position = index++;
-      if (!(position in hooks)) hooks[position] = initial;
-      return [hooks[position], (value) => {
-        hooks[position] = typeof value === "function" ? value(hooks[position]) : value;
-      }];
-    },
-    useRef(initial) {
-      const position = index++;
-      return hooks[position] ??= { current: initial };
-    },
-    useEffect(effect) { if (runEffects && !effectsStarted) effect(); },
-  };
-  const jsx = (type, props) => ({ type, props: props ?? {} });
-  const formModule = { exports: {} };
-  const source = (path) => ts.transpileModule(readFileSync(new URL(path, import.meta.url), "utf8"), {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
-  }).outputText;
-  vm.runInNewContext(source("../src/documentForm.ts"), { exports: formModule.exports });
-  const componentModule = { exports: {} };
-  const context = {
-    exports: componentModule.exports,
-    require(name) {
-      if (name === "react") return react;
-      if (name === "react/jsx-runtime") return { jsx, jsxs: jsx, Fragment: "fragment" };
-      if (name === "../documentForm") return formModule.exports;
-      throw new Error(`Unexpected import: ${name}`);
-    },
-    window: { __TAURI__: { core: { invoke } } },
-    FormData: class { get(name) { return name === "type" ? "course" : null; } },
-    Uint8Array,
-  };
-  vm.runInNewContext(source("../src/pages/Documents.tsx"), context);
-  function render() {
-    index = 0;
-    const result = componentModule.exports.default();
-    effectsStarted = true;
-    return result;
-  }
-  function find(predicate) {
-    const visit = (node) => {
-      if (Array.isArray(node)) return node.map(visit).find(Boolean);
-      if (!node || typeof node !== "object") return undefined;
-      return predicate(node) ? node : visit(node.props?.children);
-    };
-    return visit(render());
-  }
-  return { find };
-}
+const createDocuments = (invoke, runEffects = false) => createComponent("Documents", invoke, runEffects);
 
 function deferred() {
   let resolve;
@@ -72,7 +17,7 @@ const registerButton = (view) => view.find((node) => node.type === "button" && n
 const titleInput = (view) => view.find((node) => node.type === "input" && node.props.name === "title");
 const reading = { text: "Document text", source: "pdf_text", used_ocr: false, has_sufficient_text: true };
 
-test("registration waits for processing and rejects failed PDF reads", async () => {
+test("registration waits for PDF reading but not optional analysis and rejects failed reads", async () => {
   const read = deferred();
   const analysis = deferred();
   const view = createDocuments((command) => {
@@ -88,7 +33,7 @@ test("registration waits for processing and rejects failed PDF reads", async () 
   assert.equal(registerButton(view).props.disabled, true);
   read.resolve(reading);
   await new Promise(setImmediate);
-  assert.equal(registerButton(view).props.disabled, true);
+  assert.equal(registerButton(view).props.disabled, false);
   analysis.reject("Analysis failed");
   await processing;
   assert.equal(registerButton(view).props.disabled, false);
@@ -205,5 +150,82 @@ test("registration saves the current PDF reading without extracting it again", a
     await view.find((node) => node.type === "form").props.onSubmit({ preventDefault() {}, currentTarget: {} });
     assert.equal(savedText, result.text);
     assert.equal(reads, 1);
+  }
+});
+
+
+test("saves manually while checking or analyzing Ollama and ignores late results", async () => {
+  for (const pendingCommand of ["check_ollama", "analyze_pdf_text"]) {
+    const pending = deferred();
+    let saved = false;
+    const view = createDocuments((command) => {
+      if (command === "hash_pdf") return Promise.resolve("hash");
+      if (command === "document_hash_exists") return Promise.resolve(false);
+      if (command === "read_selected_pdf") return Promise.resolve(reading);
+      if (command === pendingCommand) return pending.promise;
+      if (command === "check_ollama") return Promise.resolve("model_available");
+      if (command === "store_document_pdf") { saved = true; return Promise.resolve("saved.pdf"); }
+      throw new Error(command);
+    });
+    const processing = fileInput(view).props.onChange({ target: { files: [pdf("manual.pdf")] } });
+    await new Promise(setImmediate);
+    assert.equal(registerButton(view).props.disabled, false);
+    titleInput(view).props.onChange({ target: { name: "title", value: "Manual title" } });
+    await view.find((node) => node.type === "form").props.onSubmit({ preventDefault() {}, currentTarget: {} });
+    assert.equal(saved, true);
+    pending.resolve(pendingCommand === "check_ollama" ? "model_available" : { title: "Late analysis" });
+    await processing;
+    assert.equal(titleInput(view).props.value, "");
+    assert.equal(registerButton(view).props.disabled, true);
+  }
+});
+
+test("late analysis preserves manually edited fields", async () => {
+  const pending = deferred();
+  const view = createDocuments((command) => {
+    if (command === "hash_pdf") return Promise.resolve("hash");
+    if (command === "document_hash_exists") return Promise.resolve(false);
+    if (command === "read_selected_pdf") return Promise.resolve(reading);
+    if (command === "check_ollama") return Promise.resolve("model_available");
+    if (command === "analyze_pdf_text") return pending.promise;
+    throw new Error(command);
+  });
+  const processing = fileInput(view).props.onChange({ target: { files: [pdf("manual.pdf")] } });
+  await new Promise(setImmediate);
+  titleInput(view).props.onChange({ target: { name: "title", value: "Manual title" } });
+  pending.resolve({ title: "Suggested title", country: "Brazil" });
+  await processing;
+  assert.equal(titleInput(view).props.value, "Manual title");
+  assert.equal(view.find((node) => node.type === "input" && node.props.name === "country").props.value, "Brazil");
+});
+
+test("changing PDF, editing, cancelling and unmounting ignore previous analysis", async () => {
+  for (const transition of ["selection", "edit", "cancel", "unmount"]) {
+    const pending = deferred();
+    let analyses = 0;
+    const existing = { id: 5, type: "course", title: "Existing", people: [], tags: [] };
+    const view = createDocuments((command) => {
+      if (command === "list_documents") return Promise.resolve([existing]);
+      if (command === "list_academic_options") return Promise.resolve({ organizations: [], events: [], people: [], tags: [] });
+      if (command === "hash_pdf") return Promise.resolve("hash");
+      if (command === "document_hash_exists") return Promise.resolve(false);
+      if (command === "read_selected_pdf") return Promise.resolve(reading);
+      if (command === "check_ollama") return Promise.resolve("model_available");
+      if (command === "analyze_pdf_text") return ++analyses === 1 ? pending.promise : Promise.resolve({ title: "Second PDF" });
+      throw new Error(command);
+    }, true);
+    view.find(() => false);
+    await new Promise(setImmediate);
+    if (transition === "cancel") view.find((node) => node.props["aria-label"] === "Edit Existing").props.onClick();
+    const processing = fileInput(view).props.onChange({ target: { files: [pdf("first.pdf")] } });
+    await new Promise(setImmediate);
+    if (transition === "selection") await fileInput(view).props.onChange({ target: { files: [pdf("second.pdf")] } });
+    if (transition === "edit") view.find((node) => node.props["aria-label"] === "Edit Existing").props.onClick();
+    if (transition === "cancel") view.find((node) => node.type === "button" && node.props.children === "Cancel").props.onClick();
+    if (transition === "unmount") view.unmount();
+    const before = titleInput(view).props.value;
+    pending.resolve({ title: "Stale title" });
+    await processing;
+    assert.equal(titleInput(view).props.value, before);
   }
 });

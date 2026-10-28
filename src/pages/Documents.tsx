@@ -65,6 +65,16 @@ function Documents() {
   const [revision, setRevision] = useState(0);
   const selection = useRef(0);
   const fileInput = useRef<HTMLInputElement>(null);
+  const editingHeading = useRef<HTMLHeadingElement>(null);
+  const [editRevision, setEditRevision] = useState(0);
+
+  useEffect(() => () => { selection.current += 1; }, []);
+
+  useEffect(() => {
+    if (editing === null) return;
+    editingHeading.current?.focus({ preventScroll: true });
+    editingHeading.current?.scrollIntoView({ block: "start" });
+  }, [editing, editRevision]);
 
   useEffect(() => {
     let active = true;
@@ -120,13 +130,15 @@ function Documents() {
       if (selected === selection.current) {
         setFileStatus(exists ? `This file has already been registered.\nSHA-256: ${hash}` : `SHA-256: ${hash}`);
       }
-      if (selected !== selection.current) return;
+      if (selected !== selection.current || exists) return;
       setReadingStatus("Reading PDF…");
       try {
         const result = await window.__TAURI__.core.invoke<PdfReading>("read_selected_pdf", { data });
         if (selected === selection.current) {
           setReading(result);
           setReadingStatus("");
+          setFile(file);
+          setReady(true);
         }
         if (selected !== selection.current) return;
         setAnalysisStatus("Checking Ollama…");
@@ -146,11 +158,6 @@ function Documents() {
           }
         } catch (error) {
           if (selected === selection.current) setAnalysisStatus(typeof error === "string" ? error : "Could not analyze the document.");
-        } finally {
-          if (selected === selection.current && !exists) {
-            setFile(file);
-            setReady(true);
-          }
         }
       } catch (error) {
         if (selected === selection.current) setReadingStatus(typeof error === "string" ? error : "Could not read the PDF.");
@@ -229,6 +236,7 @@ function Documents() {
   function editDocument(document: DocumentItem) {
     selection.current += 1;
     setEditing(document.id);
+    setEditRevision((value) => value + 1);
     setFile(null);
     setReady(false);
     setFileName("");
@@ -316,7 +324,7 @@ function Documents() {
         )}
         {openError && <p role="alert">{openError}</p>}
       </section>
-      <h2 className="document-form-heading">{editing === null ? "Register a document" : "Edit document"}</h2>
+      <h2 ref={editingHeading} tabIndex={-1} className="document-form-heading">{editing === null ? "Register a document" : "Edit document"}</h2>
       <form onSubmit={handleSubmit}>
         <fieldset className="profile-fields" disabled={saving}>
           <label>
@@ -342,7 +350,7 @@ function Documents() {
           <datalist id="event-options">{options.events.map((name) => <option key={name} value={name} />)}</datalist>
           <datalist id="people-options">{options.people.map((name) => <option key={name} value={name} />)}</datalist>
           <label className="profile-field-wide"><span>Tags (separated by commas)</span><input value={tags} onChange={(event) => setTags(event.target.value)} /></label>
-          {options.tags.length > 0 && <div className="profile-field-wide">Existing tags: {options.tags.map((name) => <button type="button" className="open-pdf" key={name} onClick={() => setTags((current) => current.split(",").some((value) => value.trim().toLocaleLowerCase() === name.toLocaleLowerCase()) ? current : [current.trim(), name].filter(Boolean).join(", "))}>{name}</button>)}</div>}
+          {options.tags.length > 0 && <div className="profile-field-wide existing-tags">Existing tags: {options.tags.map((name) => <button type="button" className="open-pdf" key={name} onClick={() => setTags((current) => current.split(",").some((value) => value.trim().toLocaleLowerCase() === name.toLocaleLowerCase()) ? current : [current.trim(), name].filter(Boolean).join(", "))}>{name}</button>)}</div>}
           <div className="profile-field-wide">
             <p>People</p>
             {people.map((person, index) => <div className="person-row" key={index}>

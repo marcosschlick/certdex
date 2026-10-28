@@ -1,3 +1,5 @@
+use crate::entities::named_id;
+use crate::managed_file::{commit_file_change, discard_file, read_managed_file};
 const SHA256_CONSTANTS: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -21,10 +23,10 @@ fn sha256(data: &[u8]) -> String {
         padded.push(0);
     }
     padded.extend_from_slice(&bit_length.to_be_bytes());
-    for chunk in padded.chunks_exact(64) {
+    for chunk in padded.as_chunks::<64>().0 {
         let mut words = [0u32; 64];
-        for (word, bytes) in words.iter_mut().zip(chunk.chunks_exact(4)) {
-            *word = u32::from_be_bytes(bytes.try_into().unwrap());
+        for (word, bytes) in words.iter_mut().zip(chunk.as_chunks::<4>().0) {
+            *word = u32::from_be_bytes(*bytes);
         }
         for i in 16..64 {
             let s0 = words[i - 15].rotate_right(7)
@@ -225,6 +227,194 @@ pub(crate) async fn document_hash_exists(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    fn document_input() -> DocumentInput {
+        serde_json::from_value(serde_json::json!({
+            "document_type": "course", "title": "Original", "issue_date": "2025-01-01",
+            "original_filename": "source.pdf", "extracted_text": "Original text", "tags": ["São Paulo", "SAO PAULO"]
+        })).unwrap()
+    }
+
+    #[test]
+    fn rejects_invalid_hours_and_periods_without_touching_documents_or_files() {
+        tauri::async_runtime::block_on(async {
+            let root = test_root("document-validation");
+            let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+            crate::database::create_tables(&pool).await.unwrap();
+            let mut document = document_input();
+            for hours in [-1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                document.workload_hours = Some(hours);
+                assert!(
+                    register_document(&root, &pool, b"%PDF-invalid", &document)
+                        .await
+                        .is_err()
+                );
+            }
+            assert!(!root.exists());
+            document.workload_hours = Some(0.0);
+            document.start_date = Some("2025-02-02".into());
+            document.end_date = Some("2025-02-01".into());
+            assert!(
+                register_document(&root, &pool, b"%PDF-invalid", &document)
+                    .await
+                    .is_err()
+            );
+            assert!(!root.exists());
+            document.end_date = document.start_date.clone();
+            let path = register_document(&root, &pool, b"%PDF-original", &document)
+                .await
+                .unwrap();
+            let id = load_documents(&pool).await.unwrap()[0].id;
+            for hours in [-1.0, f64::NAN, f64::INFINITY] {
+                document.workload_hours = Some(hours);
+                assert!(
+                    update_document_record(&root, &pool, id, &document, Some(b"%PDF-replacement"))
+                        .await
+                        .is_err()
+                );
+            }
+            document.workload_hours = None;
+            document.end_date = Some("2025-02-01".into());
+            assert!(
+                update_document_record(&root, &pool, id, &document, None)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(fs::read(&path).unwrap(), b"%PDF-original");
+            assert_eq!(
+                load_documents(&pool).await.unwrap()[0].workload_hours,
+                Some(0.0)
+            );
+            assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+            document.end_date = None;
+            document.validate().unwrap();
+            document.start_date = None;
+            document.end_date = Some("2025-01-01".into());
+            document.validate().unwrap();
+            fs::remove_dir_all(root).unwrap();
+        });
+    }
+
+    #[test]
+    fn reorganizes_pdfs_and_rolls_back_failed_file_updates_and_commits() {
+        tauri::async_runtime::block_on(async {
+            let root = test_root("document-relocation");
+            let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+            crate::database::create_tables(&pool).await.unwrap();
+            let mut document = document_input();
+            let original = register_document(&root, &pool, b"%PDF-original", &document)
+                .await
+                .unwrap();
+            let id = load_documents(&pool).await.unwrap()[0].id;
+            document.document_type = "article".into();
+            document.title = Some("Updated".into());
+            document.issue_date = None;
+            document.start_date = Some("2026-01-01".into());
+            document.original_filename = "must not overwrite.pdf".into();
+            document.extracted_text = "must not overwrite".into();
+            let collision = store_pdf(&root, b"%PDF-other", "article", "2026", "Updated").unwrap();
+            update_document_record(&root, &pool, id, &document, None)
+                .await
+                .unwrap();
+            let relocated = document_pdf_path(&pool, &root, id).await.unwrap();
+            assert!(relocated.ends_with("2026/article/2026-article-updated-1.pdf"));
+            assert!(!original.exists());
+            assert_eq!(fs::read(&collision).unwrap(), b"%PDF-other");
+            let metadata: (String, String, String, String) = sqlx::query_as("SELECT original_filename, file_hash, extracted_text, stored_filename FROM documents WHERE id = ?").bind(id).fetch_one(&pool).await.unwrap();
+            assert_eq!(
+                metadata,
+                (
+                    "source.pdf".into(),
+                    sha256(b"%PDF-original"),
+                    "Original text".into(),
+                    "2026-article-updated-1.pdf".into()
+                )
+            );
+            let unchanged: String =
+                sqlx::query_scalar("SELECT file_path FROM documents WHERE id = ?")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            document.role = Some("Speaker".into());
+            update_document_record(&root, &pool, id, &document, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                document_pdf_path(&pool, &root, id).await.unwrap(),
+                PathBuf::from(unchanged)
+            );
+            document.title = Some("Rejected".into());
+            sqlx::query("CREATE TRIGGER reject_path BEFORE UPDATE OF file_path ON documents BEGIN SELECT RAISE(ABORT, 'rejected'); END").execute(&pool).await.unwrap();
+            assert!(
+                update_document_record(&root, &pool, id, &document, None)
+                    .await
+                    .is_err()
+            );
+            assert!(relocated.exists());
+            assert_eq!(
+                load_documents(&pool).await.unwrap()[0].title.as_deref(),
+                Some("Updated")
+            );
+            assert_eq!(
+                fs::read_dir(relocated.parent().unwrap()).unwrap().count(),
+                2
+            );
+            sqlx::query("DROP TRIGGER reject_path")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("CREATE TABLE commit_parent (id INTEGER PRIMARY KEY)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("CREATE TABLE commit_child (id INTEGER REFERENCES commit_parent(id) DEFERRABLE INITIALLY DEFERRED)").execute(&pool).await.unwrap();
+            sqlx::query("CREATE TRIGGER reject_commit AFTER UPDATE OF file_path ON documents BEGIN INSERT INTO commit_child VALUES (999); END").execute(&pool).await.unwrap();
+            assert!(
+                update_document_record(&root, &pool, id, &document, Some(b"%PDF-replacement"))
+                    .await
+                    .is_err()
+            );
+            assert_eq!(fs::read(&relocated).unwrap(), b"%PDF-original");
+            assert_eq!(
+                load_documents(&pool).await.unwrap()[0].title.as_deref(),
+                Some("Updated")
+            );
+            assert_eq!(
+                fs::read_dir(relocated.parent().unwrap()).unwrap().count(),
+                2
+            );
+            sqlx::query("DROP TRIGGER reject_commit")
+                .execute(&pool)
+                .await
+                .unwrap();
+            fs::remove_file(&relocated).unwrap();
+            assert!(
+                update_document_record(&root, &pool, id, &document, None)
+                    .await
+                    .is_err()
+            );
+            update_document_record(&root, &pool, id, &document, Some(b"%PDF-repaired"))
+                .await
+                .unwrap();
+            assert_eq!(
+                fs::read(document_pdf_path(&pool, &root, id).await.unwrap()).unwrap(),
+                b"%PDF-repaired"
+            );
+            fs::remove_dir_all(root).unwrap();
+        });
+    }
 
     #[test]
     fn hashes_known_vectors() {
@@ -463,7 +653,10 @@ mod tests {
                 .unwrap(),
                 "original text"
             );
-            assert!(original.exists());
+            let reorganized = document_pdf_path(&pool, &root, list[0].id).await.unwrap();
+            assert!(!original.exists());
+            assert!(reorganized.ends_with("unknown-course-updated.pdf"));
+            assert_eq!(fs::read(&reorganized).unwrap(), b"%PDF-first");
             assert_eq!(
                 sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM organizations")
                     .fetch_one(&pool)
@@ -500,6 +693,7 @@ mod tests {
             .unwrap();
             let replacement = document_pdf_path(&pool, &root, list[0].id).await.unwrap();
             assert!(!original.exists());
+            assert!(!reorganized.exists());
             assert_eq!(fs::read(replacement).unwrap(), b"%PDF-replacement");
             assert_eq!(
                 sqlx::query_scalar::<_, String>(
@@ -533,6 +727,36 @@ fn store_pdf(
     if !data.starts_with(b"%PDF-") {
         return Err("The selected file is not a PDF.".into());
     }
+    let (relative, base) = pdf_location(document_type, year, title)?;
+    let directory = root.join("documents").join(relative);
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    for number in 0u32.. {
+        let name = if number == 0 {
+            format!("{base}.pdf")
+        } else {
+            format!("{base}-{number}.pdf")
+        };
+        let path = directory.join(name);
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                if let Err(error) = file.write_all(data) {
+                    drop(file);
+                    return Err(discard_file(&path, error.to_string()));
+                }
+                return Ok(path);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Err("Could not create a unique filename.".into())
+}
+
+fn pdf_location(document_type: &str, year: &str, title: &str) -> Result<(PathBuf, String), String> {
     if ![
         "certificate",
         "course",
@@ -566,34 +790,14 @@ fn store_pdf(
         .collect();
     let title = title.trim_matches('-');
     let title = if title.is_empty() { "document" } else { title };
-    let directory = root.join("documents").join(year).join(document_type);
-    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-    let base = format!("{year}-{document_type}-{title}");
-    for number in 0u32.. {
-        let name = if number == 0 {
-            format!("{base}.pdf")
-        } else {
-            format!("{base}-{number}.pdf")
-        };
-        let path = directory.join(name);
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(mut file) => {
-                if let Err(error) = file.write_all(data) {
-                    drop(file);
-                    let _ = fs::remove_file(&path);
-                    return Err(error.to_string());
-                }
-                return Ok(path);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error.to_string()),
-        }
-    }
-    Err("Could not create a unique filename.".into())
+    Ok((
+        PathBuf::from(year).join(document_type),
+        format!("{year}-{document_type}-{title}"),
+    ))
+}
+
+fn document_year(date: Option<&str>) -> &str {
+    date.and_then(|value| value.get(..4)).unwrap_or("unknown")
 }
 
 #[derive(serde::Deserialize)]
@@ -621,46 +825,49 @@ pub(crate) struct DocumentInput {
     tags: Vec<String>,
 }
 
+impl DocumentInput {
+    fn year(&self) -> &str {
+        document_year(
+            self.issue_date
+                .as_deref()
+                .or(self.start_date.as_deref())
+                .or(self.end_date.as_deref()),
+        )
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self
+            .workload_hours
+            .is_some_and(|hours| !hours.is_finite() || hours < 0.0)
+        {
+            return Err("Workload must be a finite, non-negative number.".into());
+        }
+        if let (Some(start), Some(end)) = (&self.start_date, &self.end_date)
+            && start > end
+        {
+            return Err("The start date must not be after the end date.".into());
+        }
+        pdf_location(
+            &self.document_type,
+            self.year(),
+            self.title.as_deref().unwrap_or(""),
+        )?;
+        Ok(())
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct StoredDocument {
+    r#type: String,
+    title: Option<String>,
+    date: Option<String>,
+    file_path: Option<String>,
+}
+
 #[derive(serde::Deserialize, serde::Serialize, sqlx::FromRow)]
 struct PersonInput {
     name: String,
     role: String,
-}
-
-async fn named_id(
-    connection: &mut sqlx::SqliteConnection,
-    table: &str,
-    name: &str,
-) -> Result<i64, String> {
-    let (insert, select) = match table {
-        "organizations" => (
-            "INSERT OR IGNORE INTO organizations (name) VALUES (?)",
-            "SELECT id FROM organizations WHERE name = ? COLLATE NOCASE",
-        ),
-        "events" => (
-            "INSERT OR IGNORE INTO events (name) VALUES (?)",
-            "SELECT id FROM events WHERE name = ? COLLATE NOCASE",
-        ),
-        "people" => (
-            "INSERT OR IGNORE INTO people (name) VALUES (?)",
-            "SELECT id FROM people WHERE name = ? COLLATE NOCASE",
-        ),
-        "tags" => (
-            "INSERT OR IGNORE INTO tags (name) VALUES (?)",
-            "SELECT id FROM tags WHERE name = ? COLLATE NOCASE",
-        ),
-        _ => return Err("Invalid association type.".into()),
-    };
-    sqlx::query(insert)
-        .bind(name)
-        .execute(&mut *connection)
-        .await
-        .map_err(|error| error.to_string())?;
-    sqlx::query_scalar(select)
-        .bind(name)
-        .fetch_one(connection)
-        .await
-        .map_err(|error| error.to_string())
 }
 
 async fn save_associations(
@@ -749,6 +956,7 @@ async fn register_document(
     data: &[u8],
     document: &DocumentInput,
 ) -> Result<PathBuf, String> {
+    document.validate()?;
     if !data.starts_with(b"%PDF-") {
         return Err("The selected file is not a PDF.".into());
     }
@@ -766,12 +974,7 @@ async fn register_document(
     if exists {
         return Err("This file has already been registered.".into());
     }
-    let date = document
-        .issue_date
-        .as_deref()
-        .or(document.start_date.as_deref())
-        .or(document.end_date.as_deref());
-    let year = date.and_then(|value| value.get(..4)).unwrap_or("unknown");
+    let year = document.year();
     let path = store_pdf(
         root,
         data,
@@ -809,23 +1012,9 @@ async fn register_document(
         Err(error) => Err(error.to_string()),
     };
     if let Err(error) = result {
-        if let Err(cleanup_error) = fs::remove_file(&path) {
-            return Err(format!(
-                "{error}. Could not remove {}: {cleanup_error}",
-                path.display()
-            ));
-        }
-        return Err(error);
+        return Err(discard_file(&path, error));
     }
-    if let Err(error) = transaction.commit().await {
-        if let Err(cleanup_error) = fs::remove_file(&path) {
-            return Err(format!(
-                "{error}. Could not remove {}: {cleanup_error}",
-                path.display()
-            ));
-        }
-        return Err(error.to_string());
-    }
+    commit_file_change(transaction, &path, None).await?;
     Ok(path)
 }
 
@@ -836,15 +1025,33 @@ async fn update_document_record(
     document: &DocumentInput,
     data: Option<&[u8]>,
 ) -> Result<(), String> {
-    let old_path = if data.is_some() {
-        document_pdf_path(pool, root, id).await.ok()
-    } else {
-        None
-    };
+    document.validate()?;
     let mut transaction = pool
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|error| error.to_string())?;
+    let original: StoredDocument = sqlx::query_as("SELECT type, title, COALESCE(issue_date, start_date, end_date) AS date, file_path FROM documents WHERE id = ?")
+        .bind(id).fetch_optional(&mut *transaction).await.map_err(|error| error.to_string())?
+        .ok_or("Document not found.")?;
+    let old_location = pdf_location(
+        &original.r#type,
+        document_year(original.date.as_deref()),
+        original.title.as_deref().unwrap_or(""),
+    )?;
+    let new_location = pdf_location(
+        &document.document_type,
+        document.year(),
+        document.title.as_deref().unwrap_or(""),
+    )?;
+    let relocate = old_location != new_location;
+    let previous = if data.is_some() || relocate {
+        read_managed_file(&root.join("documents"), original.file_path.as_deref())?
+    } else {
+        None
+    };
+    if relocate && data.is_none() && previous.is_none() {
+        return Err("The managed PDF is required to reorganize this document.".into());
+    }
     let result = sqlx::query("UPDATE documents SET type = ?, title = ?, role = ?, issue_date = ?, start_date = ?, end_date = ?, workload_hours = ?, city = ?, country = ?, validation_code = ?, validation_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
         .bind(&document.document_type).bind(&document.title).bind(&document.role)
         .bind(&document.issue_date).bind(&document.start_date).bind(&document.end_date)
@@ -855,12 +1062,20 @@ async fn update_document_record(
         return Err("Document not found.".into());
     }
     save_associations(&mut transaction, id, document).await?;
-    let mut new_path = None;
-    if let Some(data) = data {
-        if !data.starts_with(b"%PDF-") {
-            return Err("The selected file is not a PDF.".into());
-        }
-        let hash = sha256(data);
+    if data.is_none() && !relocate {
+        return transaction
+            .commit()
+            .await
+            .map_err(|error| error.to_string());
+    }
+    let pdf = data
+        .or_else(|| previous.as_ref().map(|(_, bytes)| bytes.as_slice()))
+        .ok_or("PDF not found for this document.")?;
+    if !pdf.starts_with(b"%PDF-") {
+        return Err("The selected file is not a PDF.".into());
+    }
+    let hash = sha256(pdf);
+    if data.is_some() {
         let exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM documents WHERE file_hash = ? AND id != ?)",
         )
@@ -872,52 +1087,34 @@ async fn update_document_record(
         if exists {
             return Err("This file has already been registered.".into());
         }
-        let date = document
-            .issue_date
-            .as_deref()
-            .or(document.start_date.as_deref())
-            .or(document.end_date.as_deref());
-        let year = date.and_then(|value| value.get(..4)).unwrap_or("unknown");
-        let path = store_pdf(
-            root,
-            data,
-            &document.document_type,
-            year,
-            document.title.as_deref().unwrap_or(""),
-        )?;
-        let filename = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default();
-        let result = sqlx::query("UPDATE documents SET original_filename = ?, stored_filename = ?, file_path = ?, file_hash = ?, extracted_text = ? WHERE id = ?")
+    }
+    let path = store_pdf(
+        root,
+        pdf,
+        &document.document_type,
+        document.year(),
+        document.title.as_deref().unwrap_or(""),
+    )?;
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let result = if data.is_some() {
+        sqlx::query("UPDATE documents SET original_filename = ?, stored_filename = ?, file_path = ?, file_hash = ?, extracted_text = ? WHERE id = ?")
             .bind(&document.original_filename).bind(filename).bind(path.to_string_lossy().as_ref())
-            .bind(hash).bind(&document.extracted_text).bind(id).execute(&mut *transaction).await;
-        if let Err(error) = result {
-            if let Err(cleanup_error) = fs::remove_file(&path) {
-                return Err(format!(
-                    "{error}. Could not remove {}: {cleanup_error}",
-                    path.display()
-                ));
-            }
-            return Err(error.to_string());
-        }
-        new_path = Some(path);
+            .bind(hash).bind(&document.extracted_text).bind(id).execute(&mut *transaction).await
+    } else {
+        sqlx::query("UPDATE documents SET stored_filename = ?, file_path = ? WHERE id = ?")
+            .bind(filename)
+            .bind(path.to_string_lossy().as_ref())
+            .bind(id)
+            .execute(&mut *transaction)
+            .await
+    };
+    if let Err(error) = result {
+        return Err(discard_file(&path, error.to_string()));
     }
-    if let Err(error) = transaction.commit().await {
-        if let Some(path) = &new_path {
-            if let Err(cleanup_error) = fs::remove_file(path) {
-                return Err(format!(
-                    "{error}. Could not remove {}: {cleanup_error}",
-                    path.display()
-                ));
-            }
-        }
-        return Err(error.to_string());
-    }
-    if let Some(path) = old_path {
-        let _ = fs::remove_file(path);
-    }
-    Ok(())
+    commit_file_change(transaction, &path, previous.as_ref()).await
 }
 
 #[tauri::command]

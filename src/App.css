@@ -40,7 +40,7 @@ nav {
 nav button {
   width: 100%;
   padding: 11px 12px;
-  border: 0;
+  border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
   color: #f8f8f8;
@@ -50,7 +50,8 @@ nav button {
 }
 
 nav button[aria-current="page"] {
-  background: #327de1;
+  background: #282828;
+  border-color: #327de1;
   font-weight: 600;
 }
 
@@ -69,6 +70,7 @@ nav button:focus-visible {
   flex: 1;
   min-width: 0;
   padding: 48px;
+  overflow-wrap: anywhere;
 }
 
 h1 {
@@ -118,6 +120,7 @@ h1 {
   margin: 0;
   padding: 0;
   border: 0;
+  min-width: 0;
 }
 
 .profile-fields label {
@@ -125,6 +128,7 @@ h1 {
   gap: 8px;
   font-size: 14px;
   font-weight: 600;
+  min-width: 0;
 }
 
 .profile-field-wide {
@@ -134,6 +138,8 @@ h1 {
 .profile-fields input,
 .profile-fields textarea {
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   padding: 10px 12px;
   border: 1px solid rgb(248 248 248 / 30%);
   border-radius: 6px;
@@ -156,6 +162,7 @@ h1 {
 
 .profile-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 16px;
   margin-top: 24px;
@@ -163,13 +170,14 @@ h1 {
 
 .profile-actions button {
   padding: 10px 16px;
-  border: 0;
+  border: 1px solid #327de1;
   border-radius: 6px;
-  background: #327de1;
+  background: #282828;
   color: #f8f8f8;
   font: inherit;
   font-weight: 600;
   cursor: pointer;
+  max-width: 100%;
 }
 
 .profile-actions button:disabled {
@@ -180,6 +188,7 @@ h1 {
 .profile-actions p {
   margin: 0;
   font-size: 14px;
+  min-width: 0;
 }
 
 @media (max-width: 600px) {
@@ -190,6 +199,8 @@ h1 {
 
 .profile-fields select {
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   padding: 10px 12px;
   border: 1px solid rgb(248 248 248 / 30%);
   border-radius: 6px;
@@ -228,6 +239,8 @@ h1 {
   display: grid;
   gap: 8px;
   width: fit-content;
+  max-width: 100%;
+  min-width: 0;
   margin: 20px 0;
   font-size: 14px;
   font-weight: 600;
@@ -235,6 +248,9 @@ h1 {
 
 .document-filter select,
 .document-filter input {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   padding: 10px 12px;
   border: 1px solid rgb(248 248 248 / 30%);
   border-radius: 6px;
@@ -261,6 +277,17 @@ h1 {
   min-width: 0;
 }
 
+@media (max-width: 600px) {
+  .person-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .person-row button {
+    align-self: start;
+  }
+}
+
 .documents-table {
   overflow-x: auto;
 }
@@ -282,6 +309,11 @@ h1 {
   white-space: nowrap;
 }
 
+.documents-table td:nth-child(2),
+.documents-table td:nth-child(3) {
+  white-space: nowrap;
+}
+
 .open-pdf {
   padding: 6px 10px;
   border: 1px solid #327de1;
@@ -291,6 +323,25 @@ h1 {
   font: inherit;
   white-space: nowrap;
   cursor: pointer;
+}
+
+.existing-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.existing-tags button {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.document-form-heading:focus-visible {
+  outline: 2px solid #327de1;
+  outline-offset: 4px;
 }
 
 .open-pdf:focus-visible {
