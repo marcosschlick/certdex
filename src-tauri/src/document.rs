@@ -156,6 +156,73 @@ mod tests {
         assert!(store_pdf(&root, b"invalid", "course", "2026", "Title").is_err());
         fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn registers_document_and_cleans_up_on_database_failure() {
+        tauri::async_runtime::block_on(async {
+            use sqlx::Row;
+            let root = std::env::temp_dir().join(format!(
+                "register-test-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+            crate::database::create_tables(&pool).await.unwrap();
+            let document = DocumentInput {
+                document_type: "course".into(),
+                title: Some("Title".into()),
+                role: Some("Student".into()),
+                issue_date: Some("2026-01-01".into()),
+                start_date: None,
+                end_date: None,
+                workload_hours: Some(12.5),
+                city: Some("City".into()),
+                country: Some("Country".into()),
+                validation_code: Some("Code".into()),
+                validation_url: Some("https://example.com".into()),
+                original_filename: "original.pdf".into(),
+            };
+            let path = register_document(&root, &pool, b"%PDF-first", &document)
+                .await
+                .unwrap();
+            let row = sqlx::query("SELECT * FROM documents")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(row.get::<String, _>("original_filename"), "original.pdf");
+            assert_eq!(
+                row.get::<String, _>("stored_filename"),
+                "2026-course-title.pdf"
+            );
+            assert_eq!(row.get::<String, _>("file_path"), path.to_string_lossy());
+            assert_eq!(row.get::<String, _>("file_hash"), sha256(b"%PDF-first"));
+            assert_eq!(row.get::<f64, _>("workload_hours"), 12.5);
+            assert_eq!(row.get::<String, _>("role"), "Student");
+            assert_eq!(row.get::<Option<String>, _>("start_date"), None);
+            assert!(
+                register_document(&root, &pool, b"%PDF-first", &document)
+                    .await
+                    .is_err()
+            );
+            sqlx::query("CREATE TRIGGER reject_document BEFORE INSERT ON documents BEGIN SELECT RAISE(ABORT, 'rejected'); END")
+                .execute(&pool).await.unwrap();
+            assert!(
+                register_document(&root, &pool, b"%PDF-second", &document)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM documents")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(count, 1);
+            fs::remove_dir_all(root).unwrap();
+        });
+    }
 }
 use sqlx::SqlitePool;
 use std::{
@@ -238,26 +305,112 @@ fn store_pdf(
     Err("Could not create a unique filename.".into())
 }
 
+#[derive(serde::Deserialize)]
+pub(crate) struct DocumentInput {
+    document_type: String,
+    title: Option<String>,
+    role: Option<String>,
+    issue_date: Option<String>,
+    start_date: Option<String>,
+    end_date: Option<String>,
+    workload_hours: Option<f64>,
+    city: Option<String>,
+    country: Option<String>,
+    validation_code: Option<String>,
+    validation_url: Option<String>,
+    original_filename: String,
+}
+
+async fn register_document(
+    root: &Path,
+    pool: &SqlitePool,
+    data: &[u8],
+    document: &DocumentInput,
+) -> Result<PathBuf, String> {
+    if !data.starts_with(b"%PDF-") {
+        return Err("The selected file is not a PDF.".into());
+    }
+    let hash = sha256(data);
+    let mut transaction = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|error| error.to_string())?;
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM documents WHERE file_hash = ?)")
+            .bind(&hash)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(|error| error.to_string())?;
+    if exists {
+        return Err("This file has already been registered.".into());
+    }
+    let date = document
+        .issue_date
+        .as_deref()
+        .or(document.start_date.as_deref())
+        .or(document.end_date.as_deref());
+    let year = date.and_then(|value| value.get(..4)).unwrap_or("unknown");
+    let path = store_pdf(
+        root,
+        data,
+        &document.document_type,
+        year,
+        document.title.as_deref().unwrap_or(""),
+    )?;
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let result = sqlx::query("INSERT INTO documents (type, title, role, issue_date, start_date, end_date, workload_hours, city, country, validation_code, validation_url, original_filename, stored_filename, file_path, file_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(&document.document_type)
+        .bind(&document.title)
+        .bind(&document.role)
+        .bind(&document.issue_date)
+        .bind(&document.start_date)
+        .bind(&document.end_date)
+        .bind(document.workload_hours)
+        .bind(&document.city)
+        .bind(&document.country)
+        .bind(&document.validation_code)
+        .bind(&document.validation_url)
+        .bind(&document.original_filename)
+        .bind(filename)
+        .bind(path.to_string_lossy().as_ref())
+        .bind(&hash)
+        .execute(&mut *transaction)
+        .await;
+    if let Err(error) = result {
+        if let Err(cleanup_error) = fs::remove_file(&path) {
+            return Err(format!(
+                "{error}. Could not remove {}: {cleanup_error}",
+                path.display()
+            ));
+        }
+        return Err(error.to_string());
+    }
+    if let Err(error) = transaction.commit().await {
+        if let Err(cleanup_error) = fs::remove_file(&path) {
+            return Err(format!(
+                "{error}. Could not remove {}: {cleanup_error}",
+                path.display()
+            ));
+        }
+        return Err(error.to_string());
+    }
+    Ok(path)
+}
+
 #[tauri::command]
 pub(crate) async fn store_document_pdf(
     app: tauri::AppHandle,
     pool: State<'_, SqlitePool>,
     data: Vec<u8>,
-    document_type: String,
-    year: String,
-    title: String,
+    document: DocumentInput,
 ) -> Result<String, String> {
-    let hash = hash_pdf(data.clone())?;
-    if contains_hash(&pool, &hash)
-        .await
-        .map_err(|error| error.to_string())?
-    {
-        return Err("This file has already been registered.".into());
-    }
     let root = app
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let path = store_pdf(&root, &data, &document_type, &year, &title)?;
+    let path = register_document(&root, &pool, &data, &document).await?;
     Ok(path.to_string_lossy().into_owned())
 }

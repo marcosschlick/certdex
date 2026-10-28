@@ -50,19 +50,30 @@ function Documents() {
     event.preventDefault();
     if (!file || !ready || saving) return;
     const form = new FormData(event.currentTarget);
-    const date = String(form.get("issue_date") || form.get("start_date") || form.get("end_date") || "");
+    const value = (name: string) => String(form.get(name) || "") || null;
     setSaving(true);
     setFileStatus("Saving PDF…");
     try {
       const data = Array.from(new Uint8Array(await file.arrayBuffer()));
       const path = await window.__TAURI__.core.invoke<string>("store_document_pdf", {
         data,
-        documentType: form.get("type"),
-        year: date ? date.slice(0, 4) : "unknown",
-        title: form.get("title"),
+        document: {
+          document_type: form.get("type"),
+          title: value("title"),
+          role: value("role"),
+          issue_date: value("issue_date"),
+          start_date: value("start_date"),
+          end_date: value("end_date"),
+          workload_hours: value("workload_hours") === null ? null : Number(value("workload_hours")),
+          city: value("city"),
+          country: value("country"),
+          validation_code: value("validation_code"),
+          validation_url: value("validation_url"),
+          original_filename: file.name,
+        },
       });
       setReady(false);
-      setFileStatus(`PDF saved locally: ${path}`);
+      setFileStatus(`Document registered: ${path}`);
     } catch (error) {
       setFileStatus(typeof error === "string" ? error : "Could not save the PDF. Please try again.");
     } finally {
@@ -98,7 +109,7 @@ function Documents() {
           {fileStatus && <p>{fileStatus}</p>}
         </div>
         <div className="profile-actions">
-          <button type="submit" disabled={!ready || saving}>{saving ? "Saving…" : "Save PDF"}</button>
+          <button type="submit" disabled={!ready || saving}>{saving ? "Saving…" : "Register document"}</button>
         </div>
       </form>
     </section>
