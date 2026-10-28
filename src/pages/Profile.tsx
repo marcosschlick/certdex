@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { isProfileComplete, requiredProfileFields } from "../profile";
 
 type ProfileData = {
   name: string;
@@ -40,7 +41,7 @@ const fields: { name: keyof ProfileData; label: string; multiline?: boolean }[] 
   { name: "academic_summary", label: "Academic summary", multiline: true },
 ];
 
-function Profile() {
+function Profile({ setup = false, onComplete }: { setup?: boolean; onComplete?: () => void }) {
   const [profile, setProfile] = useState<ProfileData | null>(null);
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
@@ -56,11 +57,16 @@ function Profile() {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!profile || saving) return;
+    if (setup && !isProfileComplete(profile)) {
+      setMessage("Please complete all required fields.");
+      return;
+    }
     setSaving(true);
     setMessage("");
     try {
       await window.__TAURI__.core.invoke("save_profile", { profile });
-      setMessage("Profile saved.");
+      if (setup) onComplete?.();
+      else setMessage("Profile saved.");
     } catch {
       setMessage("Could not save the profile. Please try again.");
     } finally {
@@ -70,11 +76,12 @@ function Profile() {
 
   return (
     <section className="profile">
-      <h1>Profile</h1>
+      <h1>{setup ? "Set up your profile" : "Profile"}</h1>
+      {setup && <p>Complete these fields to continue.</p>}
       {profile ? (
         <form onSubmit={handleSubmit}>
           <fieldset disabled={saving} className="profile-fields">
-            {fields.map((field) => (
+            {fields.filter((field) => !setup || requiredProfileFields.some((name) => name === field.name)).map((field) => (
               <label key={field.name} className={field.multiline ? "profile-field-wide" : undefined}>
                 <span>{field.label}</span>
                 {field.multiline ? (
@@ -83,7 +90,7 @@ function Profile() {
                     setMessage("");
                   }} />
                 ) : (
-                  <input value={profile[field.name]} onChange={(event) => {
+                  <input required={setup} type={field.name === "email" && setup ? "email" : "text"} value={profile[field.name]} onChange={(event) => {
                     setProfile({ ...profile, [field.name]: event.target.value });
                     setMessage("");
                   }} />
@@ -92,7 +99,7 @@ function Profile() {
             ))}
           </fieldset>
           <div className="profile-actions">
-            <button type="submit" disabled={saving}>{saving ? "Saving…" : "Save changes"}</button>
+            <button type="submit" disabled={saving}>{saving ? "Saving…" : setup ? "Save and continue" : "Save changes"}</button>
             <p role="status">{message}</p>
           </div>
         </form>

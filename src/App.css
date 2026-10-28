@@ -283,3 +283,18 @@ h1 {
   outline: 2px solid #327de1;
   outline-offset: 2px;
 }
+
+select {
+  color-scheme: dark;
+  accent-color: #327de1;
+}
+
+select option {
+  background-color: #282828;
+  color: #f8f8f8;
+}
+
+select option:checked {
+  background-color: #f8f8f8;
+  color: #282828;
+}
