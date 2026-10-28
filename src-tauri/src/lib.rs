@@ -1,5 +1,6 @@
 mod database;
 mod document;
+pub mod pdf;
 mod profile;
 
 use tauri::Manager;
