@@ -1,4 +1,6 @@
 import { useState } from "react";
+import Documents from "./pages/Documents";
+import Profile from "./pages/Profile";
 import "./App.css";
 
 function App() {
@@ -26,7 +28,7 @@ function App() {
         </nav>
       </aside>
       <main className="content">
-        <h1>{page === "documents" ? "Documents" : "Profile"}</h1>
+        {page === "documents" ? <Documents /> : <Profile />}
       </main>
     </div>
   );
