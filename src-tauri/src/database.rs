@@ -30,6 +30,14 @@ pub(crate) async fn create_tables(pool: &SqlitePool) -> Result<(), sqlx::Error> 
     )
     .execute(pool)
     .await?;
+    let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('profile')")
+        .fetch_all(pool)
+        .await?;
+    if !columns.iter().any(|column| column == "photo_path") {
+        sqlx::query("ALTER TABLE profile ADD COLUMN photo_path TEXT")
+            .execute(pool)
+            .await?;
+    }
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS documents (
             id INTEGER PRIMARY KEY,
@@ -90,6 +98,30 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(name, "Test");
+        });
+    }
+
+    #[test]
+    fn adds_photo_path_to_existing_profile_without_losing_data() {
+        tauri::async_runtime::block_on(async {
+            let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+            sqlx::query("CREATE TABLE profile (id INTEGER PRIMARY KEY, name TEXT)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO profile (id, name) VALUES (1, 'Existing')")
+                .execute(&pool)
+                .await
+                .unwrap();
+            create_tables(&pool).await.unwrap();
+            create_tables(&pool).await.unwrap();
+            let (name, photo): (String, Option<String>) =
+                sqlx::query_as("SELECT name, photo_path FROM profile WHERE id = 1")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(name, "Existing");
+            assert_eq!(photo, None);
         });
     }
 

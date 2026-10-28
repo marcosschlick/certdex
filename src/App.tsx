@@ -8,6 +8,8 @@ function App() {
   const [setup, setSetup] = useState<"loading" | "required" | "complete" | "error">("loading");
   const [attempt, setAttempt] = useState(0);
   const [page, setPage] = useState<"documents" | "profile">("documents");
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+  const [photoRevision, setPhotoRevision] = useState(0);
 
   useEffect(() => {
     let active = true;
@@ -16,6 +18,20 @@ function App() {
       .catch(() => { if (active) setSetup("error"); });
     return () => { active = false; };
   }, [attempt]);
+
+  useEffect(() => {
+    if (setup !== "complete") return;
+    let active = true;
+    let url: string | null = null;
+    window.__TAURI__.core.invoke<{ data: number[]; mime_type: string } | null>("get_profile_photo")
+      .then((photo) => {
+        if (!active) return;
+        if (photo) url = URL.createObjectURL(new Blob([new Uint8Array(photo.data)], { type: photo.mime_type }));
+        setPhotoUrl(url);
+      })
+      .catch(() => { if (active) setPhotoUrl(null); });
+    return () => { active = false; if (url) URL.revokeObjectURL(url); };
+  }, [setup, photoRevision]);
 
   if (setup !== "complete") {
     return (
@@ -30,6 +46,9 @@ function App() {
   return (
     <div className="app">
       <aside className="sidebar">
+        <div className="sidebar-photo">
+          {photoUrl ? <img src={photoUrl} alt="Profile" /> : <span aria-label="No profile photo">●</span>}
+        </div>
         <div className="brand">Certificates</div>
         <nav aria-label="Main navigation">
           <button
@@ -49,7 +68,7 @@ function App() {
         </nav>
       </aside>
       <main className="content">
-        {page === "documents" ? <Documents /> : <Profile />}
+        {page === "documents" ? <Documents /> : <Profile onPhotoChange={() => setPhotoRevision((value) => value + 1)} />}
       </main>
     </div>
   );

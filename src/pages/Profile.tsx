@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
 import { isProfileComplete, requiredProfileFields } from "../profile";
 
 type ProfileData = {
@@ -41,7 +41,7 @@ const fields: { name: keyof ProfileData; label: string; multiline?: boolean }[] 
   { name: "academic_summary", label: "Academic summary", multiline: true },
 ];
 
-function Profile({ setup = false, onComplete }: { setup?: boolean; onComplete?: () => void }) {
+function Profile({ setup = false, onComplete, onPhotoChange }: { setup?: boolean; onComplete?: () => void; onPhotoChange?: () => void }) {
   const [profile, setProfile] = useState<ProfileData | null>(null);
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
@@ -74,12 +74,35 @@ function Profile({ setup = false, onComplete }: { setup?: boolean; onComplete?: 
     }
   }
 
+  async function handlePhotoChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setSaving(true);
+    setMessage("");
+    try {
+      const data = Array.from(new Uint8Array(await file.arrayBuffer()));
+      await window.__TAURI__.core.invoke("save_profile_photo", { data });
+      onPhotoChange?.();
+      setMessage("Profile photo saved.");
+    } catch (error) {
+      setMessage(typeof error === "string" ? error : "Could not save the profile photo.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <section className="profile">
       <h1>{setup ? "Set up your profile" : "Profile"}</h1>
       {setup && <p>Complete these fields to continue.</p>}
       {profile ? (
         <form onSubmit={handleSubmit}>
+          {!setup && <label className="photo-field">
+            <span>Profile photo</span>
+            <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" disabled={saving} onChange={handlePhotoChange} />
+            <span className="photo-hint">The photo is saved when selected.</span>
+          </label>}
           <fieldset disabled={saving} className="profile-fields">
             {fields.filter((field) => !setup || requiredProfileFields.some((name) => name === field.name)).map((field) => (
               <label key={field.name} className={field.multiline ? "profile-field-wide" : undefined}>

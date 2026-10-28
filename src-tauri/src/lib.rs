@@ -13,6 +13,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             profile::get_profile,
             profile::save_profile,
+            profile::save_profile_photo,
+            profile::get_profile_photo,
             document::hash_pdf,
             document::document_hash_exists,
             document::store_document_pdf,
