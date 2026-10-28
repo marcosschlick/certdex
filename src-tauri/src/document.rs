@@ -74,6 +74,23 @@ pub(crate) fn hash_pdf(data: Vec<u8>) -> Result<String, String> {
     Ok(sha256(&data))
 }
 
+async fn contains_hash(pool: &SqlitePool, hash: &str) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM documents WHERE file_hash = ?)")
+        .bind(hash)
+        .fetch_one(pool)
+        .await
+}
+
+#[tauri::command]
+pub(crate) async fn document_hash_exists(
+    pool: State<'_, SqlitePool>,
+    hash: String,
+) -> Result<bool, String> {
+    contains_hash(&pool, &hash)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,4 +111,23 @@ mod tests {
         );
         assert!(hash_pdf(b"not a pdf".to_vec()).is_err());
     }
+
+    #[test]
+    fn finds_duplicates_by_hash_only() {
+        tauri::async_runtime::block_on(async {
+            let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+            crate::database::create_tables(&pool).await.unwrap();
+            sqlx::query("INSERT INTO documents (type, file_hash, original_filename) VALUES ('certificate', ?, ?)")
+                .bind("existing-hash")
+                .bind("document.pdf")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            assert!(contains_hash(&pool, "existing-hash").await.unwrap());
+            assert!(!contains_hash(&pool, "different-hash").await.unwrap());
+        });
+    }
 }
+use sqlx::SqlitePool;
+use tauri::State;

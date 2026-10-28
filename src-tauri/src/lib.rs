@@ -10,7 +10,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             profile::get_profile,
             profile::save_profile,
-            document::hash_pdf
+            document::hash_pdf,
+            document::document_hash_exists
         ])
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;

@@ -26,7 +26,12 @@ function Documents() {
     try {
       const data = Array.from(new Uint8Array(await file.arrayBuffer()));
       const hash = await window.__TAURI__.core.invoke<string>("hash_pdf", { data });
-      if (selected === selection.current) setFileStatus(`SHA-256: ${hash}`);
+      if (selected !== selection.current) return;
+      setFileStatus("Checking for duplicates…");
+      const exists = await window.__TAURI__.core.invoke<boolean>("document_hash_exists", { hash });
+      if (selected === selection.current) {
+        setFileStatus(exists ? `This file has already been registered.\nSHA-256: ${hash}` : `SHA-256: ${hash}`);
+      }
     } catch {
       if (selected === selection.current) setFileStatus("Could not process the PDF. Check the file and try again.");
     }
