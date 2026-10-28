@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { applyDocumentAnalysis, emptyDocumentForm, type DocumentAnalysis, type DocumentForm } from "../documentForm";
 
 const documentTypes = [
   "certificate", "course", "article", "proceedings", "presentation", "event",
@@ -20,21 +21,10 @@ type PdfReading = {
   has_sufficient_text: boolean;
 };
 
-type DocumentAnalysis = {
-  type: string | null;
-  title: string | null;
-  role: string | null;
-  issue_date: string | null;
-  start_date: string | null;
-  end_date: string | null;
-  workload_hours: number | null;
-  city: string | null;
-  country: string | null;
-  validation_code: string | null;
-  validation_url: string | null;
-};
 
 function Documents() {
+  const [formValues, setFormValues] = useState<DocumentForm>(emptyDocumentForm);
+  const editedFields = useRef(new Set<keyof DocumentForm>());
   const [fileName, setFileName] = useState("");
   const [fileStatus, setFileStatus] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -59,6 +49,13 @@ function Documents() {
     return () => { active = false; };
   }, [revision]);
 
+  function handleFieldChange(event: ChangeEvent<HTMLInputElement | HTMLSelectElement>) {
+    const name = event.target.name as keyof DocumentForm;
+    const value = event.target.value;
+    editedFields.current.add(name);
+    setFormValues((current) => ({ ...current, [name]: value }));
+  }
+
   async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const selected = ++selection.current;
     const file = event.target.files?.[0];
@@ -70,6 +67,7 @@ function Documents() {
     setReadingStatus("");
     setAnalysis(null);
     setAnalysisStatus("");
+    setFormValues((current) => applyDocumentAnalysis(current, editedFields.current, null));
     if (!file) return;
     if (!file.name.toLowerCase().endsWith(".pdf")) {
       event.target.value = "";
@@ -100,12 +98,20 @@ function Documents() {
           setReadingStatus("");
         }
         if (selected !== selection.current) return;
-        setAnalysisStatus("Analyzing document…");
+        setAnalysisStatus("Checking Ollama…");
         try {
+          const status = await window.__TAURI__.core.invoke<"model_available" | "model_missing" | "unavailable">("check_ollama");
+          if (selected !== selection.current) return;
+          if (status !== "model_available") {
+            setAnalysisStatus(status === "unavailable" ? "Ollama is unavailable. You can continue filling out the form manually." : "The qwen3:1.7b model is not installed. You can continue filling out the form manually.");
+            return;
+          }
+          setAnalysisStatus("Analyzing document…");
           const analysisResult = await window.__TAURI__.core.invoke<DocumentAnalysis>("analyze_pdf_text", { text: result.text });
           if (selected === selection.current) {
             setAnalysis(analysisResult);
-            setAnalysisStatus("");
+            setFormValues((current) => applyDocumentAnalysis(current, editedFields.current, analysisResult));
+            setAnalysisStatus("Analysis complete. Review the fields before registering the document.");
           }
         } catch (error) {
           if (selected === selection.current) setAnalysisStatus(typeof error === "string" ? error : "Could not analyze the document.");
@@ -121,6 +127,9 @@ function Documents() {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!file || !ready || saving) return;
+    selection.current += 1;
+    setReadingStatus("");
+    setAnalysisStatus("");
     const form = new FormData(event.currentTarget);
     const value = (name: string) => String(form.get(name) || "") || null;
     setSaving(true);
@@ -206,22 +215,24 @@ function Documents() {
         <fieldset className="profile-fields" disabled={saving}>
           <label>
             <span>Document type</span>
-            <select name="type" defaultValue="certificate">
+            <select name="type" value={formValues.type} required onChange={handleFieldChange}>
+              <option value="">Select a type</option>
               {documentTypes.map((type) => <option key={type} value={type}>{type[0].toUpperCase() + type.slice(1)}</option>)}
             </select>
           </label>
-          <label><span>Title</span><input name="title" /></label>
-          <label><span>Role</span><input name="role" /></label>
-          <label><span>Issue date</span><input name="issue_date" type="date" /></label>
-          <label><span>Start date</span><input name="start_date" type="date" /></label>
-          <label><span>End date</span><input name="end_date" type="date" /></label>
-          <label><span>Workload (hours)</span><input name="workload_hours" type="number" min="0" step="any" /></label>
-          <label><span>City</span><input name="city" /></label>
-          <label><span>Country</span><input name="country" /></label>
-          <label><span>Validation code</span><input name="validation_code" /></label>
-          <label className="profile-field-wide"><span>Validation URL</span><input name="validation_url" type="url" /></label>
+          <label><span>Title</span><input name="title" value={formValues.title} onChange={handleFieldChange} /></label>
+          <label><span>Role</span><input name="role" value={formValues.role} onChange={handleFieldChange} /></label>
+          <label><span>Issue date</span><input name="issue_date" value={formValues.issue_date} onChange={handleFieldChange} type="date" /></label>
+          <label><span>Start date</span><input name="start_date" value={formValues.start_date} onChange={handleFieldChange} type="date" /></label>
+          <label><span>End date</span><input name="end_date" value={formValues.end_date} onChange={handleFieldChange} type="date" /></label>
+          <label><span>Workload (hours)</span><input name="workload_hours" value={formValues.workload_hours} onChange={handleFieldChange} type="number" min="0" step="any" /></label>
+          <label><span>City</span><input name="city" value={formValues.city} onChange={handleFieldChange} /></label>
+          <label><span>Country</span><input name="country" value={formValues.country} onChange={handleFieldChange} /></label>
+          <label><span>Validation code</span><input name="validation_code" value={formValues.validation_code} onChange={handleFieldChange} /></label>
+          <label className="profile-field-wide"><span>Validation URL</span><input name="validation_url" value={formValues.validation_url} onChange={handleFieldChange} type="url" /></label>
           <label className="profile-field-wide"><span>PDF file</span><input type="file" accept=".pdf,application/pdf" onChange={handleFileChange} /></label>
         </fieldset>
+        {analysisStatus && <p role="status">{analysisStatus}</p>}
         <div className="document-file" aria-live="polite">
           {fileName && <p>Selected file: {fileName}</p>}
           {fileStatus && <p>{fileStatus}</p>}
@@ -241,7 +252,6 @@ function Documents() {
         {!reading && !readingStatus && <p>Select a PDF to inspect its extracted text.</p>}
         {reading && <>
           <h2>Document analysis (debug)</h2>
-          {analysisStatus && <p role="status">{analysisStatus}</p>}
           {analysis && <pre>{JSON.stringify(analysis, null, 2)}</pre>}
         </>}
       </section>
