@@ -72,9 +72,9 @@ test("edits an existing document with its associations", async () => {
 });
 
 test("filtered documents determine the displayed workload", async () => {
-  const base = { type: "course", role: null, issue_date: "2025-01-01", start_date: null, end_date: null, city: null, country: null, tags: [], workload_hours: 3 };
+  const base = { type: "course", role: null, issue_date: "2025-01-01", start_date: null, end_date: null, city: null, country: null, organization: null, event: null, people: [], tags: [], workload_hours: 3 };
   const view = createDocuments((command) => {
-    if (command === "list_documents") return Promise.resolve([{ ...base, id: 1, title: "Rust" }, { ...base, id: 2, title: "Math", workload_hours: 5 }]);
+    if (command === "list_documents") return Promise.resolve([{ ...base, id: 1, title: "Rust", organization: "University", event: "Congress", people: [{ name: "Ada", role: "Author" }], tags: ["Research"] }, { ...base, id: 2, title: "Math", workload_hours: 5 }]);
     if (command === "list_academic_options") return Promise.resolve({ organizations: [], events: [], people: [], tags: [] });
     throw new Error(command);
   }, true);
@@ -82,8 +82,10 @@ test("filtered documents determine the displayed workload", async () => {
   await new Promise(setImmediate);
   const total = () => view.find((node) => node.type === "p" && node.props.children?.[0] === "Total workload: ").props.children[1];
   assert.equal(total(), 8);
-  view.find((node) => node.type === "input" && node.props.type === "search").props.onChange({ target: { value: "rust" } });
-  assert.equal(total(), 3);
+  for (const query of ["rust", "university", "congress", "ada", "author", "research"]) {
+    view.find((node) => node.type === "input" && node.props.type === "search").props.onChange({ target: { value: query } });
+    assert.equal(total(), 3);
+  }
 });
 
 test("changing PDFs and successful registration clear document fields", async () => {

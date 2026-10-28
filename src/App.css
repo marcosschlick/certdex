@@ -294,6 +294,7 @@ h1 {
 
 .documents-table table {
   width: 100%;
+  min-width: 760px;
   border-collapse: collapse;
   text-align: left;
   font-size: 14px;
@@ -307,6 +308,11 @@ h1 {
 
 .documents-table th {
   white-space: nowrap;
+}
+
+.documents-table th:first-child,
+.documents-table td:first-child {
+  min-width: 240px;
 }
 
 .documents-table td:nth-child(2),

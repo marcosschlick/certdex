@@ -24,13 +24,16 @@ test("fills identified fields without replacing manual edits", () => {
 });
 
 test("filters documents by text, type, year and tag together", () => {
-  const document = { type: "course", title: "Rust Course", role: "Speaker", city: "Recife", country: "Brazil", issue_date: null, start_date: "2025-02-01", end_date: null, tags: ["Programming"] };
-  for (const query of ["rust", "SPEAKER", "recife", "brazil"]) {
+  const document = { type: "course", title: "Rust Course", role: "Speaker", city: "Recife", country: "Brazil", issue_date: null, start_date: "2025-02-01", end_date: null, organization: "University", event: "Research Congress", people: [{ name: "Ada Lovelace", role: "Author" }, { name: "Grace Hopper", role: "Advisor" }], tags: ["Programming", "Research"] };
+  for (const query of ["rust", "SPEAKER", "recife", "brazil", "UNIVERSITY", "congress", "ada", "hopper", "ADVISOR", "program", "  research  "]) {
     assert.equal(matchesDocumentFilters(document, query, "course", "2025", "Programming"), true);
   }
   assert.equal(matchesDocumentFilters(document, "missing", "", "", ""), false);
   assert.equal(matchesDocumentFilters(document, "", "article", "", ""), false);
   assert.equal(matchesDocumentFilters(document, "", "", "2024", ""), false);
   assert.equal(matchesDocumentFilters(document, "", "", "", "Other"), false);
-  assert.equal(matchesDocumentFilters({ ...document, title: null, role: null, city: null, country: null }, "x", "", "", ""), false);
+  assert.equal(matchesDocumentFilters(document, "university", "article", "", ""), false);
+  assert.equal(matchesDocumentFilters(document, "congress", "", "2024", ""), false);
+  assert.equal(matchesDocumentFilters(document, "ada", "", "", "Other"), false);
+  assert.equal(matchesDocumentFilters({ ...document, title: null, role: null, city: null, country: null, organization: null, event: null, people: [], tags: [] }, "research", "", "", ""), false);
 });

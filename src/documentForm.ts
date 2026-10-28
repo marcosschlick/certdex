@@ -36,6 +36,9 @@ type FilterableDocument = {
   issue_date: string | null;
   start_date: string | null;
   end_date: string | null;
+  organization: string | null;
+  event: string | null;
+  people: { name: string; role: string }[];
   tags: string[];
 };
 
@@ -44,5 +47,10 @@ export function matchesDocumentFilters(document: FilterableDocument, search: str
   return (!type || document.type === type)
     && (!year || (document.issue_date || document.start_date || document.end_date || "").startsWith(year))
     && (!tag || document.tags.includes(tag))
-    && (!query || [document.title, document.role, document.city, document.country].some((value) => value?.toLocaleLowerCase().includes(query)));
+    && (!query || [
+      document.title, document.role, document.city, document.country,
+      document.organization, document.event,
+      ...document.people.flatMap((person) => [person.name, person.role]),
+      ...document.tags,
+    ].some((value) => value?.toLocaleLowerCase().includes(query)));
 }
