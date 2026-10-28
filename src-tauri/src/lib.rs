@@ -1,5 +1,6 @@
 mod database;
 mod document;
+mod ollama;
 pub mod pdf;
 mod profile;
 
@@ -16,6 +17,7 @@ pub fn run() {
             document::store_document_pdf,
             document::list_documents,
             pdf::read_selected_pdf,
+            ollama::check_ollama,
             document::open_document_pdf
         ])
         .setup(|app| {
