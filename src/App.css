@@ -298,3 +298,23 @@ select option:checked {
   background-color: #f8f8f8;
   color: #282828;
 }
+
+.pdf-debug {
+  margin-top: 40px;
+  padding-top: 24px;
+  border-top: 1px solid rgb(248 248 248 / 30%);
+}
+
+.pdf-debug h2 {
+  font-size: 18px;
+}
+
+.pdf-debug pre {
+  max-height: 320px;
+  overflow: auto;
+  padding: 16px;
+  border: 1px solid rgb(248 248 248 / 30%);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

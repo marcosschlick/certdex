@@ -15,6 +15,7 @@ pub fn run() {
             document::document_hash_exists,
             document::store_document_pdf,
             document::list_documents,
+            pdf::read_selected_pdf,
             document::open_document_pdf
         ])
         .setup(|app| {

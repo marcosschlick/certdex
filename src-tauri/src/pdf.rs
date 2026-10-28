@@ -5,46 +5,32 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+#[derive(serde::Serialize)]
 pub struct ExtractedText {
     pub text: String,
     pub has_sufficient_text: bool,
+    pub source: &'static str,
+    pub used_ocr: bool,
 }
 
 pub fn extract_text_with_quality(path: &Path) -> Result<ExtractedText, String> {
     let text = extract_text(path)?;
-    let text = if has_sufficient_text(&text) {
-        text
-    } else {
-        extract_ocr(path)?
-    };
+    let used_ocr = !has_sufficient_text(&text);
+    let text = if used_ocr { extract_ocr(path)? } else { text };
     let has_sufficient_text = has_sufficient_text(&text);
     Ok(ExtractedText {
         text,
         has_sufficient_text,
+        source: if used_ocr { "ocr" } else { "pdf_text" },
+        used_ocr,
     })
 }
 
 fn extract_ocr(path: &Path) -> Result<String, String> {
-    static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
     let path = path
         .canonicalize()
         .map_err(|error| format!("Could not access PDF: {error}"))?;
-    let directory = loop {
-        let candidate = std::env::temp_dir().join(format!(
-            "pdf-ocr-{}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|error| error.to_string())?
-                .as_nanos(),
-            NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed)
-        ));
-        match fs::create_dir(&candidate) {
-            Ok(()) => break candidate,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(format!("Could not create OCR temporary directory: {error}")),
-        }
-    };
+    let directory = create_temp_directory()?;
     let result = run_ocr(
         &path,
         &directory,
@@ -62,6 +48,61 @@ fn extract_ocr(path: &Path) -> Result<String, String> {
                 .unwrap_or_default()
         )),
     }
+}
+
+fn create_temp_directory() -> Result<PathBuf, String> {
+    static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+    loop {
+        let candidate = std::env::temp_dir().join(format!(
+            "pdf-ocr-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|error| error.to_string())?
+                .as_nanos(),
+            NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        match builder.create(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("Could not create OCR temporary directory: {error}")),
+        }
+    }
+}
+
+fn read_pdf(data: &[u8]) -> Result<ExtractedText, String> {
+    if !data.starts_with(b"%PDF-") {
+        return Err("The selected file is not a PDF.".into());
+    }
+    let directory = create_temp_directory()?;
+    let path = directory.join("input.pdf");
+    let result = fs::write(&path, data)
+        .map_err(|error| format!("Could not prepare PDF for reading: {error}"))
+        .and_then(|()| extract_text_with_quality(&path));
+    match fs::remove_dir_all(&directory) {
+        Ok(()) => result,
+        Err(error) => Err(format!(
+            "Could not remove temporary PDF directory {}: {error}{}",
+            directory.display(),
+            result
+                .err()
+                .map(|original| format!("; {original}"))
+                .unwrap_or_default()
+        )),
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn read_selected_pdf(data: Vec<u8>) -> Result<ExtractedText, String> {
+    tauri::async_runtime::spawn_blocking(move || read_pdf(&data))
+        .await
+        .map_err(|error| format!("PDF reading failed: {error}"))?
 }
 
 fn run_ocr(
@@ -170,11 +211,23 @@ mod tests {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/searchable.pdf");
         let extracted = extract_text_with_quality(&path).unwrap();
         assert!(extracted.has_sufficient_text);
+        assert_eq!(extracted.source, "pdf_text");
+        assert!(!extracted.used_ocr);
         assert!(
             extracted
                 .text
                 .contains("This PDF has enough searchable text.")
         );
+    }
+
+    #[test]
+    fn reads_pdf_bytes_with_source_and_rejects_non_pdf() {
+        let data = include_bytes!("../tests/fixtures/searchable.pdf");
+        let result = read_pdf(data).unwrap();
+        assert_eq!(result.source, "pdf_text");
+        assert!(!result.used_ocr);
+        assert!(result.text.contains("This PDF has enough searchable text."));
+        assert!(read_pdf(b"not a PDF").is_err());
     }
 
     #[test]

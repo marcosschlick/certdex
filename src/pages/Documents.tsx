@@ -13,12 +13,21 @@ type DocumentItem = {
   workload_hours: number | null;
 };
 
+type PdfReading = {
+  text: string;
+  source: "pdf_text" | "ocr";
+  used_ocr: boolean;
+  has_sufficient_text: boolean;
+};
+
 function Documents() {
   const [fileName, setFileName] = useState("");
   const [fileStatus, setFileStatus] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [ready, setReady] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [reading, setReading] = useState<PdfReading | null>(null);
+  const [readingStatus, setReadingStatus] = useState("");
   const [documents, setDocuments] = useState<DocumentItem[] | null>(null);
   const [listError, setListError] = useState("");
   const [openError, setOpenError] = useState("");
@@ -41,6 +50,8 @@ function Documents() {
     setReady(false);
     setFileName("");
     setFileStatus("");
+    setReading(null);
+    setReadingStatus("");
     if (!file) return;
     if (!file.name.toLowerCase().endsWith(".pdf")) {
       event.target.value = "";
@@ -61,6 +72,17 @@ function Documents() {
           setFile(file);
           setReady(true);
         }
+      }
+      if (selected !== selection.current) return;
+      setReadingStatus("Reading PDF…");
+      try {
+        const result = await window.__TAURI__.core.invoke<PdfReading>("read_selected_pdf", { data });
+        if (selected === selection.current) {
+          setReading(result);
+          setReadingStatus("");
+        }
+      } catch (error) {
+        if (selected === selection.current) setReadingStatus(typeof error === "string" ? error : "Could not read the PDF.");
       }
     } catch {
       if (selected === selection.current) setFileStatus("Could not process the PDF. Check the file and try again.");
@@ -179,6 +201,16 @@ function Documents() {
           <button type="submit" disabled={!ready || saving}>{saving ? "Saving…" : "Register document"}</button>
         </div>
       </form>
+      <section className="pdf-debug" aria-labelledby="pdf-debug-heading">
+        <h2 id="pdf-debug-heading">PDF text (debug)</h2>
+        {readingStatus && <p role="status">{readingStatus}</p>}
+        {reading && <>
+          <p>Source: {reading.source} · OCR used: {reading.used_ocr ? "yes" : "no"}</p>
+          {!reading.has_sufficient_text && <p>The extracted text contains fewer than 20 non-whitespace characters.</p>}
+          <pre>{reading.text || "No text extracted."}</pre>
+        </>}
+        {!reading && !readingStatus && <p>Select a PDF to inspect its extracted text.</p>}
+      </section>
     </section>
   );
 }
