@@ -209,3 +209,61 @@ h1 {
   font-size: 14px;
   overflow-wrap: anywhere;
 }
+
+.documents-list {
+  margin-top: 32px;
+}
+
+.documents-list h2,
+.document-form-heading {
+  font-size: 18px;
+  font-weight: 650;
+}
+
+.document-form-heading {
+  margin: 48px 0 0;
+}
+
+.document-filter {
+  display: grid;
+  gap: 8px;
+  width: fit-content;
+  margin: 20px 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.document-filter select {
+  padding: 10px 12px;
+  border: 1px solid rgb(248 248 248 / 30%);
+  border-radius: 6px;
+  background: #282828;
+  color: #f8f8f8;
+  font: inherit;
+}
+
+.document-filter select:focus-visible {
+  outline: 2px solid #327de1;
+  outline-offset: 2px;
+}
+
+.documents-table {
+  overflow-x: auto;
+}
+
+.documents-table table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 14px;
+}
+
+.documents-table th,
+.documents-table td {
+  padding: 12px;
+  border-bottom: 1px solid rgb(248 248 248 / 12%);
+}
+
+.documents-table th {
+  white-space: nowrap;
+}

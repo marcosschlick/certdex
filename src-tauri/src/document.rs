@@ -81,6 +81,32 @@ async fn contains_hash(pool: &SqlitePool, hash: &str) -> Result<bool, sqlx::Erro
         .await
 }
 
+#[derive(serde::Serialize, sqlx::FromRow)]
+pub(crate) struct DocumentListItem {
+    id: i64,
+    title: Option<String>,
+    r#type: String,
+    issue_date: Option<String>,
+    workload_hours: Option<f64>,
+}
+
+async fn load_documents(pool: &SqlitePool) -> Result<Vec<DocumentListItem>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT id, title, type, issue_date, workload_hours FROM documents ORDER BY id DESC",
+    )
+    .fetch_all(pool)
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn list_documents(
+    pool: State<'_, SqlitePool>,
+) -> Result<Vec<DocumentListItem>, String> {
+    load_documents(&pool)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 pub(crate) async fn document_hash_exists(
     pool: State<'_, SqlitePool>,
@@ -126,6 +152,24 @@ mod tests {
 
             assert!(contains_hash(&pool, "existing-hash").await.unwrap());
             assert!(!contains_hash(&pool, "different-hash").await.unwrap());
+        });
+    }
+
+    #[test]
+    fn lists_saved_documents_with_optional_fields() {
+        tauri::async_runtime::block_on(async {
+            let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+            crate::database::create_tables(&pool).await.unwrap();
+            assert!(load_documents(&pool).await.unwrap().is_empty());
+            sqlx::query("INSERT INTO documents (type, title, issue_date, workload_hours) VALUES ('course', 'Rust', '2026-01-01', 12.5), ('other', NULL, NULL, NULL)")
+                .execute(&pool).await.unwrap();
+            let documents = load_documents(&pool).await.unwrap();
+            assert_eq!(documents.len(), 2);
+            assert_eq!(documents[0].r#type, "other");
+            assert_eq!(documents[0].title, None);
+            assert_eq!(documents[1].title.as_deref(), Some("Rust"));
+            assert_eq!(documents[1].issue_date.as_deref(), Some("2026-01-01"));
+            assert_eq!(documents[1].workload_hours, Some(12.5));
         });
     }
 

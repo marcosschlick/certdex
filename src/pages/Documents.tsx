@@ -1,9 +1,17 @@
-import { useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 
 const documentTypes = [
   "certificate", "course", "article", "proceedings", "presentation", "event",
   "award", "project", "internship", "monitoring", "other",
 ];
+
+type DocumentItem = {
+  id: number;
+  title: string | null;
+  type: string;
+  issue_date: string | null;
+  workload_hours: number | null;
+};
 
 function Documents() {
   const [fileName, setFileName] = useState("");
@@ -11,7 +19,19 @@ function Documents() {
   const [file, setFile] = useState<File | null>(null);
   const [ready, setReady] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [documents, setDocuments] = useState<DocumentItem[] | null>(null);
+  const [listError, setListError] = useState("");
+  const [filter, setFilter] = useState("");
+  const [revision, setRevision] = useState(0);
   const selection = useRef(0);
+
+  useEffect(() => {
+    let active = true;
+    window.__TAURI__.core.invoke<DocumentItem[]>("list_documents")
+      .then((items) => { if (active) { setDocuments(items); setListError(""); } })
+      .catch(() => { if (active) setListError("Could not load documents."); });
+    return () => { active = false; };
+  }, [revision]);
 
   async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const selected = ++selection.current;
@@ -74,6 +94,7 @@ function Documents() {
       });
       setReady(false);
       setFileStatus(`Document registered: ${path}`);
+      setRevision((current) => current + 1);
     } catch (error) {
       setFileStatus(typeof error === "string" ? error : "Could not save the PDF. Please try again.");
     } finally {
@@ -81,9 +102,43 @@ function Documents() {
     }
   }
 
+  const visibleDocuments = documents?.filter((document) => !filter || document.type === filter);
+
   return (
     <section className="profile">
       <h1>Documents</h1>
+      <section className="documents-list" aria-labelledby="documents-list-heading">
+        <h2 id="documents-list-heading">Registered documents</h2>
+        <label className="document-filter">
+          <span>Filter by type</span>
+          <select value={filter} onChange={(event) => setFilter(event.target.value)}>
+            <option value="">All types</option>
+            {documentTypes.map((type) => <option key={type} value={type}>{type[0].toUpperCase() + type.slice(1)}</option>)}
+          </select>
+        </label>
+        {listError ? <p role="alert">{listError}</p> : documents === null ? <p role="status">Loading documents…</p> : (
+          visibleDocuments?.length === 0 ? (
+            <p>No documents found.</p>
+          ) : (
+            <div className="documents-table">
+              <table>
+                <thead><tr><th>Title</th><th>Type</th><th>Issue date</th><th>Workload (hours)</th></tr></thead>
+                <tbody>
+                  {visibleDocuments?.map((document) => (
+                    <tr key={document.id}>
+                      <td>{document.title || "—"}</td>
+                      <td>{document.type}</td>
+                      <td>{document.issue_date || "—"}</td>
+                      <td>{document.workload_hours ?? "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        )}
+      </section>
+      <h2 className="document-form-heading">Register a document</h2>
       <form onSubmit={handleSubmit}>
         <fieldset className="profile-fields" disabled={saving}>
           <label>
