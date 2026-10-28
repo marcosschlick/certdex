@@ -135,12 +135,16 @@ function Documents() {
       try {
         const result = await window.__TAURI__.core.invoke<PdfReading>("read_selected_pdf", { data });
         if (selected === selection.current) {
-          setReading(result);
+          setReading(result.text.trim() ? result : { ...result, text: "" });
           setReadingStatus("");
           setFile(file);
           setReady(true);
         }
         if (selected !== selection.current) return;
+        if (!result.text.trim()) {
+          setAnalysisStatus("Text could not be extracted. You can continue filling out the form manually.");
+          return;
+        }
         setAnalysisStatus("Checking Ollama…");
         try {
           const status = await window.__TAURI__.core.invoke<"model_available" | "model_missing" | "unavailable">("check_ollama");

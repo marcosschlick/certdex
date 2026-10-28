@@ -361,6 +361,50 @@ mod tests {
     }
 
     #[test]
+    fn persists_empty_text_on_manual_registration_and_pdf_replacement() {
+        tauri::async_runtime::block_on(async {
+            let root = test_root("document-manual-registration");
+            let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+            crate::database::create_tables(&pool).await.unwrap();
+            let mut document = document_input();
+            document.extracted_text.clear();
+            register_document(&root, &pool, ORIGINAL_PDF, &document)
+                .await
+                .unwrap();
+            let id = load_documents(&pool).await.unwrap()[0].id;
+            let text: String =
+                sqlx::query_scalar("SELECT extracted_text FROM documents WHERE id = ?")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert!(text.is_empty());
+            sqlx::query(
+                "UPDATE documents SET extracted_text = 'Previously extracted text' WHERE id = ?",
+            )
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            update_document_record(&root, &pool, id, &document, Some(REPLACEMENT_PDF))
+                .await
+                .unwrap();
+            let text: String =
+                sqlx::query_scalar("SELECT extracted_text FROM documents WHERE id = ?")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert!(text.is_empty());
+            assert_eq!(
+                fs::read(document_pdf_path(&pool, &root, id).await.unwrap()).unwrap(),
+                REPLACEMENT_PDF
+            );
+            fs::remove_dir_all(root).unwrap();
+        });
+    }
+
+    #[test]
     fn rejects_invalid_pdfs_without_changing_existing_documents_or_files() {
         tauri::async_runtime::block_on(async {
             let root = test_root("document-pdf-validation");

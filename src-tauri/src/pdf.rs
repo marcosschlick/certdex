@@ -25,6 +25,7 @@ fn extract_with_ocr(
     pdf_warning: Option<String>,
     ocr: impl FnOnce() -> Result<String, String>,
 ) -> Result<ExtractedText, String> {
+    let pdf_recognized = pdf_warning.is_none();
     let mut warnings: Vec<String> = pdf_warning.into_iter().collect();
     let (text, used_ocr) = if has_sufficient_text(&text) && warnings.is_empty() {
         (text, false)
@@ -46,7 +47,10 @@ fn extract_with_ocr(
             }
             Err(error) => {
                 warnings.push(format!("OCR failed and no PDF text was extracted: {error}"));
-                return Err(warnings.join(" "));
+                if !pdf_recognized {
+                    return Err(warnings.join(" "));
+                }
+                (String::new(), false)
             }
         }
     };
@@ -363,6 +367,7 @@ mod tests {
         assert!(!result.used_ocr);
         assert!(result.text.contains("This PDF has enough searchable text."));
         assert!(read_pdf(b"not a PDF").is_err());
+        assert!(read_pdf(b"%PDF-1.4\nnot a document\n%%EOF").is_err());
     }
 
     #[test]
@@ -407,12 +412,16 @@ mod tests {
     }
 
     #[test]
-    fn reports_ocr_failure_without_pdf_text_and_uses_successful_ocr() {
-        let error = extract_with_ocr(" \n".into(), None, || Err("tesseract unavailable".into()))
-            .err()
-            .unwrap();
-        assert!(error.contains("no PDF text was extracted"));
-        assert!(error.contains("tesseract unavailable"));
+    fn allows_empty_text_for_recognized_pdfs_and_preserves_successful_extraction() {
+        let result =
+            extract_with_ocr(" \n".into(), None, || Err("tesseract unavailable".into())).unwrap();
+        assert!(result.text.is_empty());
+        assert!(!result.has_sufficient_text);
+        assert!(!result.used_ocr);
+        assert_eq!(result.source, "pdf_text");
+        let warning = result.warning.unwrap();
+        assert!(warning.contains("no PDF text was extracted"));
+        assert!(warning.contains("tesseract unavailable"));
 
         let result = extract_with_ocr("Short text".into(), None, || {
             Ok("Recognized document text".into())

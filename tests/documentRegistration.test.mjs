@@ -153,6 +153,45 @@ test("registration saves the current PDF reading without extracting it again", a
   }
 });
 
+test("allows manual registration and replacement without text or AI calls", async () => {
+  for (const editing of [false, true]) {
+    for (const text of ["", " \n\t"]) {
+      const calls = [];
+      let saved;
+      const existing = { id: 5, type: "course", title: "Existing", people: [], tags: [] };
+      const view = createDocuments((command, args) => {
+        calls.push(command);
+        if (command === "list_documents") return Promise.resolve([existing]);
+        if (command === "list_academic_options") return Promise.resolve({ organizations: [], events: [], people: [], tags: [] });
+        if (command === "hash_pdf") return Promise.resolve("hash");
+        if (command === "document_hash_exists") return Promise.resolve(false);
+        if (command === "read_selected_pdf") return Promise.resolve({ ...reading, text, has_sufficient_text: false, warning: "OCR failed and no PDF text was extracted." });
+        if (command === "store_document_pdf" || command === "update_document") {
+          saved = { command, args };
+          return Promise.resolve("saved.pdf");
+        }
+        throw new Error(command);
+      }, true);
+      view.find(() => false);
+      await new Promise(setImmediate);
+      if (editing) view.find((node) => node.props["aria-label"] === "Edit Existing").props.onClick();
+      await fileInput(view).props.onChange({ target: { files: [pdf("manual.pdf")] } });
+      assert.equal(registerButton(view).props.disabled, false);
+      assert.ok(view.find((node) => node.type === "p" && node.props.role === "status" && node.props.children === "Text could not be extracted. You can continue filling out the form manually."));
+      assert.equal(calls.includes("check_ollama"), false);
+      assert.equal(calls.includes("analyze_pdf_text"), false);
+      await view.find((node) => node.type === "form").props.onSubmit({ preventDefault() {}, currentTarget: {} });
+      assert.equal(saved.command, editing ? "update_document" : "store_document_pdf");
+      assert.equal(saved.args.document.extracted_text, "");
+      assert.equal(saved.args.document.original_filename, "manual.pdf");
+      if (editing) {
+        assert.equal(saved.args.id, existing.id);
+        assert.ok(saved.args.data);
+      }
+    }
+  }
+});
+
 
 test("saves manually while checking or analyzing Ollama and ignores late results", async () => {
   for (const pendingCommand of ["check_ollama", "analyze_pdf_text"]) {
