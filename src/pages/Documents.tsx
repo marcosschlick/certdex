@@ -19,6 +19,7 @@ type PdfReading = {
   source: "pdf_text" | "ocr";
   used_ocr: boolean;
   has_sufficient_text: boolean;
+  warning: string | null;
 };
 
 
@@ -256,6 +257,7 @@ function Documents() {
         {readingStatus && <p role="status">{readingStatus}</p>}
         {reading && <>
           <p>Source: {reading.source} · OCR used: {reading.used_ocr ? "yes" : "no"}</p>
+          {reading.warning && <p role="alert">{reading.warning}</p>}
           {!reading.has_sufficient_text && <p>The extracted text contains fewer than 20 non-whitespace characters.</p>}
           <pre>{reading.text || "No text extracted."}</pre>
         </>}

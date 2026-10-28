@@ -11,18 +11,47 @@ pub struct ExtractedText {
     pub has_sufficient_text: bool,
     pub source: &'static str,
     pub used_ocr: bool,
+    pub warning: Option<String>,
 }
 
 pub fn extract_text_with_quality(path: &Path) -> Result<ExtractedText, String> {
     let text = extract_text(path)?;
-    let used_ocr = !has_sufficient_text(&text);
-    let text = if used_ocr { extract_ocr(path)? } else { text };
+    extract_with_ocr(text, || extract_ocr(path))
+}
+
+fn extract_with_ocr(
+    text: String,
+    ocr: impl FnOnce() -> Result<String, String>,
+) -> Result<ExtractedText, String> {
+    let (text, used_ocr, warning) = if has_sufficient_text(&text) {
+        (text, false, None)
+    } else {
+        match ocr() {
+            Ok(ocr_text) if !ocr_text.trim().is_empty() || text.trim().is_empty() => {
+                (ocr_text, true, None)
+            }
+            Ok(_) => (
+                text,
+                false,
+                Some("OCR produced no text. Showing the text extracted from the PDF.".into()),
+            ),
+            Err(error) if !text.trim().is_empty() => (
+                text,
+                false,
+                Some(format!(
+                    "OCR failed: {error}. Showing the text extracted from the PDF."
+                )),
+            ),
+            Err(error) => return Err(format!("OCR failed and no PDF text was extracted: {error}")),
+        }
+    };
     let has_sufficient_text = has_sufficient_text(&text);
     Ok(ExtractedText {
         text,
         has_sufficient_text,
         source: if used_ocr { "ocr" } else { "pdf_text" },
         used_ocr,
+        warning,
     })
 }
 
@@ -252,6 +281,48 @@ mod tests {
         assert!(has_sufficient_text("1234567890 \n 1234567890"));
         assert!(!has_sufficient_text("éééééééééé"));
         assert!(has_sufficient_text("éééééééééééééééééééé"));
+    }
+
+    #[test]
+    fn preserves_pdf_text_when_ocr_fails_or_returns_no_text() {
+        let result =
+            extract_with_ocr("Short text".into(), || Err("tesseract unavailable".into())).unwrap();
+        assert_eq!(result.text, "Short text");
+        assert_eq!(result.source, "pdf_text");
+        assert!(!result.used_ocr);
+        assert!(!result.has_sufficient_text);
+        assert!(result.warning.unwrap().contains("tesseract unavailable"));
+
+        let result = extract_with_ocr("Short text".into(), || Ok(" \n".into())).unwrap();
+        assert_eq!(result.text, "Short text");
+        assert!(result.warning.unwrap().contains("OCR produced no text"));
+    }
+
+    #[test]
+    fn reports_ocr_failure_without_pdf_text_and_uses_successful_ocr() {
+        let error = extract_with_ocr(" \n".into(), || Err("tesseract unavailable".into()))
+            .err()
+            .unwrap();
+        assert!(error.contains("no PDF text was extracted"));
+        assert!(error.contains("tesseract unavailable"));
+
+        let result = extract_with_ocr(
+            "Short text".into(),
+            || Ok("Recognized document text".into()),
+        )
+        .unwrap();
+        assert_eq!(result.text, "Recognized document text");
+        assert_eq!(result.source, "ocr");
+        assert!(result.used_ocr);
+        assert!(result.has_sufficient_text);
+        assert!(result.warning.is_none());
+
+        let result = extract_with_ocr("This text is already sufficient".into(), || {
+            panic!("OCR should not run")
+        })
+        .unwrap();
+        assert_eq!(result.source, "pdf_text");
+        assert!(result.warning.is_none());
     }
 
     #[cfg(unix)]
