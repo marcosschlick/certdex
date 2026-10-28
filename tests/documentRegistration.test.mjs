@@ -140,3 +140,29 @@ test("stale processing and duplicate PDFs cannot enable registration", async () 
   await first;
   assert.equal(registerButton(view).props.disabled, true);
 });
+
+test("registration saves the current PDF reading without extracting it again", async () => {
+  for (const result of [
+    { ...reading, text: "PDF text\nwith accents: ação" },
+    { ...reading, text: "OCR result", source: "ocr", used_ocr: true },
+    { ...reading, text: "", source: "ocr", used_ocr: true, has_sufficient_text: false },
+  ]) {
+    let reads = 0;
+    let savedText;
+    const view = createDocuments((command, args) => {
+      if (command === "hash_pdf") return Promise.resolve("hash");
+      if (command === "document_hash_exists") return Promise.resolve(false);
+      if (command === "read_selected_pdf") { reads += 1; return Promise.resolve(result); }
+      if (command === "check_ollama") return Promise.resolve("unavailable");
+      if (command === "store_document_pdf") {
+        savedText = args.document.extracted_text;
+        return Promise.resolve("saved.pdf");
+      }
+      throw new Error(command);
+    });
+    await fileInput(view).props.onChange({ target: { files: [pdf("document.pdf")] } });
+    await view.find((node) => node.type === "form").props.onSubmit({ preventDefault() {}, currentTarget: {} });
+    assert.equal(savedText, result.text);
+    assert.equal(reads, 1);
+  }
+});

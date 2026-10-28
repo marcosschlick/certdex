@@ -130,7 +130,7 @@ function Documents() {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!file || !ready || saving) return;
+    if (!file || !reading || !ready || saving) return;
     selection.current += 1;
     setReadingStatus("");
     setAnalysisStatus("");
@@ -155,6 +155,7 @@ function Documents() {
           validation_code: value("validation_code"),
           validation_url: value("validation_url"),
           original_filename: file.name,
+          extracted_text: reading.text,
         },
       });
       setReady(false);

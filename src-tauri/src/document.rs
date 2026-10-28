@@ -311,6 +311,7 @@ mod tests {
                 validation_code: Some("Code".into()),
                 validation_url: Some("https://example.com".into()),
                 original_filename: "original.pdf".into(),
+                extracted_text: "Extracted text\nwith accents: ação".into(),
             };
             let path = register_document(&root, &pool, b"%PDF-first", &document)
                 .await
@@ -326,6 +327,10 @@ mod tests {
             );
             assert_eq!(row.get::<String, _>("file_path"), path.to_string_lossy());
             assert_eq!(row.get::<String, _>("file_hash"), sha256(b"%PDF-first"));
+            assert_eq!(
+                row.get::<String, _>("extracted_text"),
+                "Extracted text\nwith accents: ação"
+            );
             assert_eq!(row.get::<f64, _>("workload_hours"), 12.5);
             assert_eq!(row.get::<String, _>("role"), "Student");
             assert_eq!(row.get::<Option<String>, _>("start_date"), None);
@@ -446,6 +451,7 @@ pub(crate) struct DocumentInput {
     validation_code: Option<String>,
     validation_url: Option<String>,
     original_filename: String,
+    extracted_text: String,
 }
 
 async fn register_document(
@@ -488,7 +494,7 @@ async fn register_document(
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default();
-    let result = sqlx::query("INSERT INTO documents (type, title, role, issue_date, start_date, end_date, workload_hours, city, country, validation_code, validation_url, original_filename, stored_filename, file_path, file_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    let result = sqlx::query("INSERT INTO documents (type, title, role, issue_date, start_date, end_date, workload_hours, city, country, validation_code, validation_url, original_filename, stored_filename, file_path, file_hash, extracted_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(&document.document_type)
         .bind(&document.title)
         .bind(&document.role)
@@ -504,6 +510,7 @@ async fn register_document(
         .bind(filename)
         .bind(path.to_string_lossy().as_ref())
         .bind(&hash)
+        .bind(&document.extracted_text)
         .execute(&mut *transaction)
         .await;
     if let Err(error) = result {
