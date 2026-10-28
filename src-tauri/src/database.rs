@@ -10,7 +10,7 @@ pub async fn initialize(path: &Path) -> Result<SqlitePool, sqlx::Error> {
     Ok(pool)
 }
 
-async fn create_tables(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+pub(crate) async fn create_tables(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS profile (
             id INTEGER PRIMARY KEY CHECK (id = 1),
