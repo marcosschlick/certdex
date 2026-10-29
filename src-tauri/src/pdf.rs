@@ -202,6 +202,8 @@ fn run_ocr(
             .arg("stdout")
             .arg("-l")
             .arg("por+eng+spa")
+            .arg("--psm")
+            .arg("1")
             .output()
             .map_err(|error| format!("Could not run tesseract for page {number}: {error}"))?;
         if !output.status.success() {
@@ -461,7 +463,7 @@ mod tests {
             "#!/bin/sh\ntouch \"$3-10.png\" \"$3-2.png\" \"$3-1.png\"\n",
         )
         .unwrap();
-        fs::write(&tesseract, "#!/bin/sh\n[ \"$2\" = stdout ] && [ \"$3\" = -l ] && [ \"$4\" = por+eng+spa ] || exit 1\nprintf '%s' \"${1##*/}\"\n").unwrap();
+        fs::write(&tesseract, "#!/bin/sh\n[ \"$2\" = stdout ] && [ \"$3\" = -l ] && [ \"$4\" = por+eng+spa ] && [ \"$5\" = --psm ] && [ \"$6\" = 1 ] || exit 1\nprintf '%s' \"${1##*/}\"\n").unwrap();
         for program in [&renderer, &tesseract] {
             fs::set_permissions(program, fs::Permissions::from_mode(0o700)).unwrap();
         }

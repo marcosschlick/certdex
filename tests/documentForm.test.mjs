@@ -23,6 +23,17 @@ test("fills identified fields without replacing manual edits", () => {
   assert.equal(reset.country, "");
 });
 
+test("leaves incomplete AI dates blank", () => {
+  const result = applyDocumentAnalysis(emptyDocumentForm, new Set(), {
+    type: null, title: null, role: null, issue_date: "2025-09-29", start_date: "2024-03",
+    end_date: null, workload_hours: null, city: null, country: null,
+    validation_code: null, validation_url: null,
+  });
+  assert.equal(result.issue_date, "2025-09-29");
+  assert.equal(result.start_date, "");
+  assert.equal(result.end_date, "");
+});
+
 test("filters documents by text, type, year and tag together", () => {
   const document = { type: "course", title: "Rust Course", role: "Speaker", city: "Recife", country: "Brazil", issue_date: null, start_date: "2025-02-01", end_date: null, organization: "University", event: "Research Congress", people: [{ name: "Ada Lovelace", role: "Author" }, { name: "Grace Hopper", role: "Advisor" }], tags: ["Programming", "Research"] };
   for (const query of ["rust", "SPEAKER", "recife", "brazil", "UNIVERSITY", "congress", "ada", "hopper", "ADVISOR", "program", "  research  "]) {

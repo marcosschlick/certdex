@@ -17,7 +17,7 @@ const registerButton = (view) => view.find((node) => node.type === "button" && n
 const titleInput = (view) => view.find((node) => node.type === "input" && node.props.name === "title");
 const reading = { text: "Document text", source: "pdf_text", used_ocr: false, has_sufficient_text: true };
 
-test("registration waits for PDF reading but not optional analysis and rejects failed reads", async () => {
+test("registration waits for PDF reading and Ollama analysis and rejects failed reads", async () => {
   const read = deferred();
   const analysis = deferred();
   const view = createDocuments((command) => {
@@ -33,7 +33,7 @@ test("registration waits for PDF reading but not optional analysis and rejects f
   assert.equal(registerButton(view).props.disabled, true);
   read.resolve(reading);
   await new Promise(setImmediate);
-  assert.equal(registerButton(view).props.disabled, false);
+  assert.equal(registerButton(view).props.disabled, true);
   analysis.reject("Analysis failed");
   await processing;
   assert.equal(registerButton(view).props.disabled, false);
@@ -195,30 +195,44 @@ test("allows manual registration and replacement without text or AI calls", asyn
 });
 
 
-test("saves manually while checking or analyzing Ollama and ignores late results", async () => {
-  for (const pendingCommand of ["check_ollama", "analyze_pdf_text"]) {
-    const pending = deferred();
-    let saved = false;
-    const view = createDocuments((command) => {
-      if (command === "hash_pdf") return Promise.resolve("hash");
-      if (command === "document_hash_exists") return Promise.resolve(false);
-      if (command === "read_selected_pdf") return Promise.resolve(reading);
-      if (command === pendingCommand) return pending.promise;
-      if (command === "check_ollama") return Promise.resolve("model_available");
-      if (command === "store_document_pdf") { saved = true; return Promise.resolve("saved.pdf"); }
-      throw new Error(command);
-    });
-    const processing = fileInput(view).props.onChange({ target: { files: [pdf("manual.pdf")] } });
-    await new Promise(setImmediate);
-    assert.equal(registerButton(view).props.disabled, false);
-    titleInput(view).props.onChange({ target: { name: "title", value: "Manual title" } });
-    await view.find((node) => node.type === "form").props.onSubmit({ preventDefault() {}, currentTarget: {} });
-    assert.equal(saved, true);
-    pending.resolve(pendingCommand === "check_ollama" ? "model_available" : { title: "Late analysis" });
-    await processing;
-    assert.equal(titleInput(view).props.value, "");
-    assert.equal(registerButton(view).props.disabled, true);
-  }
+test("blocks registration while checking or analyzing and enables it after a result", async () => {
+  const check = deferred();
+  const analysis = deferred();
+  let saves = 0;
+  const view = createDocuments((command) => {
+    if (command === "hash_pdf") return Promise.resolve("hash");
+    if (command === "document_hash_exists") return Promise.resolve(false);
+    if (command === "read_selected_pdf") return Promise.resolve(reading);
+    if (command === "check_ollama") return check.promise;
+    if (command === "analyze_pdf_text") return analysis.promise;
+    if (command === "store_document_pdf") { saves += 1; return Promise.resolve("saved.pdf"); }
+    throw new Error(command);
+  });
+  const processing = fileInput(view).props.onChange({ target: { files: [pdf("manual.pdf")] } });
+  await new Promise(setImmediate);
+  assert.equal(registerButton(view).props.disabled, true);
+  await view.find((node) => node.type === "form").props.onSubmit({ preventDefault() {}, currentTarget: {} });
+  assert.equal(saves, 0);
+  check.resolve("model_available");
+  await new Promise(setImmediate);
+  assert.equal(registerButton(view).props.disabled, true);
+  analysis.resolve({ title: "Suggested title" });
+  await processing;
+  assert.equal(titleInput(view).props.value, "Suggested title");
+  assert.equal(registerButton(view).props.disabled, false);
+});
+
+test("enables manual registration when Ollama is unavailable", async () => {
+  const view = createDocuments((command) => {
+    if (command === "hash_pdf") return Promise.resolve("hash");
+    if (command === "document_hash_exists") return Promise.resolve(false);
+    if (command === "read_selected_pdf") return Promise.resolve(reading);
+    if (command === "check_ollama") return Promise.resolve("unavailable");
+    if (command === "store_document_pdf") return Promise.resolve("saved.pdf");
+    throw new Error(command);
+  });
+  await fileInput(view).props.onChange({ target: { files: [pdf("manual.pdf")] } });
+  assert.equal(registerButton(view).props.disabled, false);
 });
 
 test("late analysis preserves manually edited fields", async () => {

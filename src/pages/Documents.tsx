@@ -48,6 +48,7 @@ function Documents() {
   const [readingStatus, setReadingStatus] = useState("");
   const [analysis, setAnalysis] = useState<DocumentAnalysis | null>(null);
   const [analysisStatus, setAnalysisStatus] = useState("");
+  const analysisPending = analysisStatus === "Checking Ollama…" || analysisStatus === "Analyzing document…";
   const [documents, setDocuments] = useState<DocumentItem[] | null>(null);
   const [listError, setListError] = useState("");
   const [optionsError, setOptionsError] = useState("");
@@ -173,7 +174,7 @@ function Documents() {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (saving || (editing === null && (!file || !reading || !ready)) || (editing !== null && fileName && (!file || !reading || !ready))) return;
+    if (saving || analysisPending || (editing === null && (!file || !reading || !ready)) || (editing !== null && fileName && (!file || !reading || !ready))) return;
     selection.current += 1;
     setReadingStatus("");
     setAnalysisStatus("");
@@ -372,7 +373,7 @@ function Documents() {
           {fileStatus && <p>{fileStatus}</p>}
         </div>
         <div className="profile-actions">
-          <button type="submit" disabled={saving || ((editing === null || !!fileName) && !ready)}>{saving ? "Saving…" : editing === null ? "Register document" : "Save changes"}</button>
+          <button type="submit" disabled={saving || analysisPending || ((editing === null || !!fileName) && !ready)}>{saving ? "Saving…" : editing === null ? "Register document" : "Save changes"}</button>
           {editing !== null && <button type="button" disabled={saving} onClick={cancelEdit}>Cancel</button>}
         </div>
       </form>

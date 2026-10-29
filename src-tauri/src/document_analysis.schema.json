@@ -1,6 +1,19 @@
 {
   "type": "object",
   "additionalProperties": false,
+  "required": [
+    "type",
+    "title",
+    "role",
+    "issue_date",
+    "start_date",
+    "end_date",
+    "workload_hours",
+    "city",
+    "country",
+    "validation_code",
+    "validation_url"
+  ],
   "properties": {
     "type": {
       "type": ["string", "null"],

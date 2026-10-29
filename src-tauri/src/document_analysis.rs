@@ -43,6 +43,11 @@ mod tests {
     fn schema_matches_structure_and_document_types() {
         let schema: Value = serde_json::from_str(DOCUMENT_ANALYSIS_SCHEMA).unwrap();
         let properties = schema["properties"].as_object().unwrap();
+        let required = schema["required"].as_array().unwrap();
+        assert_eq!(required.len(), properties.len());
+        for name in properties.keys() {
+            assert!(required.contains(&json!(name)));
+        }
         let empty: DocumentAnalysis = serde_json::from_value(json!({})).unwrap();
         let serialized = serde_json::to_value(empty).unwrap();
         let fields = serialized.as_object().unwrap();

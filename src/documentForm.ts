@@ -22,7 +22,11 @@ export const emptyDocumentForm: DocumentForm = {
 export function applyDocumentAnalysis(current: DocumentForm, edited: ReadonlySet<keyof DocumentForm>, analysis: DocumentAnalysis | null): DocumentForm {
   const result = { ...current };
   for (const field of Object.keys(emptyDocumentForm) as (keyof DocumentForm)[]) {
-    if (!edited.has(field)) result[field] = analysis?.[field] == null ? "" : String(analysis[field]);
+    if (edited.has(field)) continue;
+    const value = analysis?.[field];
+    const isDate = field === "issue_date" || field === "start_date" || field === "end_date";
+    const text = value == null ? "" : String(value);
+    result[field] = isDate && text && !/^\d{4}-\d{2}-\d{2}$/.test(text) ? "" : text;
   }
   return result;
 }
