@@ -136,7 +136,8 @@ h1 {
 }
 
 .profile-fields input,
-.profile-fields textarea {
+.profile-fields textarea,
+.profile-fields select {
   width: 100%;
   min-width: 0;
   max-width: 100%;
@@ -155,6 +156,7 @@ h1 {
 
 .profile-fields input:focus-visible,
 .profile-fields textarea:focus-visible,
+.profile-fields select:focus-visible,
 .profile-actions button:focus-visible {
   outline: 2px solid #327de1;
   outline-offset: 2px;
@@ -195,24 +197,6 @@ h1 {
   .profile-fields {
     grid-template-columns: 1fr;
   }
-}
-
-.profile-fields select {
-  width: 100%;
-  min-width: 0;
-  max-width: 100%;
-  padding: 10px 12px;
-  border: 1px solid rgb(248 248 248 / 30%);
-  border-radius: 6px;
-  background: #282828;
-  color: #f8f8f8;
-  font: inherit;
-  font-weight: 400;
-}
-
-.profile-fields select:focus-visible {
-  outline: 2px solid #327de1;
-  outline-offset: 2px;
 }
 
 .document-file {
