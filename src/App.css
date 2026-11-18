@@ -3,6 +3,7 @@
   color: #f8f8f8;
   background: #282828;
   font-synthesis: none;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 * {
@@ -434,4 +435,230 @@ select option:checked {
 
 .photo-hint {
   font-weight: 400;
+}
+
+.chat {
+  display: flex;
+  flex-direction: column;
+  max-width: 820px;
+  min-height: calc(100vh - 96px);
+  gap: 20px;
+}
+
+.chat-messages {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.chat-empty {
+  margin: 0;
+  color: rgb(248 248 248 / 72%);
+  font-size: 14px;
+}
+
+.chat-message {
+  padding: 14px 16px;
+  border: 1px solid rgb(248 248 248 / 14%);
+  border-radius: 8px;
+  background: rgb(248 248 248 / 4%);
+}
+
+.chat-message-user {
+  align-self: flex-end;
+  max-width: 80%;
+  border-color: #327de1;
+  background: rgb(50 125 225 / 14%);
+}
+
+.chat-message-user p,
+.chat-reply,
+.chat-mode,
+.chat-result-meta,
+.chat-result-path,
+.chat-error {
+  margin: 0;
+}
+
+.chat-reply {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.chat-mode {
+  margin-top: 6px;
+  color: rgb(248 248 248 / 70%);
+  font-size: 12px;
+}
+
+.chat-results {
+  display: grid;
+  gap: 12px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chat-result-card {
+  padding: 14px;
+  border: 1px solid rgb(248 248 248 / 16%);
+  border-radius: 6px;
+  background: #282828;
+  opacity: 0;
+  transform: translateY(6px);
+  animation: chatCardEnter 180ms var(--ease-out) forwards;
+}
+
+@keyframes chatCardEnter {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.chat-result-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.chat-result-type {
+  padding: 2px 8px;
+  border: 1px solid rgb(248 248 248 / 24%);
+  border-radius: 4px;
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.chat-result-meta {
+  margin-top: 6px;
+  color: rgb(248 248 248 / 76%);
+  font-size: 13px;
+}
+
+.chat-result-path {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  background: rgb(248 248 248 / 6%);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.chat-result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.chat-action-open,
+.chat-action-reveal,
+.chat-form button {
+  padding: 8px 14px;
+  border: 1px solid #327de1;
+  border-radius: 6px;
+  background: #282828;
+  color: #f8f8f8;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 140ms var(--ease-out), background-color 140ms ease, border-color 140ms ease;
+}
+
+.chat-action-reveal {
+  border-color: rgb(248 248 248 / 32%);
+}
+
+.chat-action-open:active,
+.chat-action-reveal:active,
+.chat-form button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.chat-action-open:focus-visible,
+.chat-action-reveal:focus-visible,
+.chat-form input:focus-visible,
+.chat-form button:focus-visible {
+  outline: 2px solid #327de1;
+  outline-offset: 2px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .chat-action-open:hover,
+  .chat-form button:hover:not(:disabled) {
+    background: rgb(50 125 225 / 18%);
+  }
+
+  .chat-action-reveal:hover {
+    background: rgb(248 248 248 / 10%);
+  }
+}
+
+.chat-error {
+  color: #df2935;
+  font-size: 14px;
+}
+
+.chat-form {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgb(248 248 248 / 12%);
+}
+
+.chat-input-label {
+  display: grid;
+  flex: 1;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.chat-form input {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid rgb(248 248 248 / 30%);
+  border-radius: 6px;
+  background: #282828;
+  color: #f8f8f8;
+  font: inherit;
+  font-weight: 400;
+}
+
+.chat-form button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-result-card {
+    transform: none;
+    animation: chatCardFade 160ms ease forwards;
+  }
+
+  .chat-action-open,
+  .chat-action-reveal,
+  .chat-form button {
+    transition: background-color 140ms ease, border-color 140ms ease;
+  }
+
+  .chat-action-open:active,
+  .chat-action-reveal:active,
+  .chat-form button:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+@keyframes chatCardFade {
+  to {
+    opacity: 1;
+  }
 }

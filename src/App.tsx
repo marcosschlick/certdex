@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import Chat from "./pages/Chat";
 import Documents from "./pages/Documents";
 import Profile from "./pages/Profile";
 import { isProfileComplete } from "./profile";
@@ -7,7 +8,7 @@ import "./App.css";
 function App() {
   const [setup, setSetup] = useState<"loading" | "required" | "complete" | "error">("loading");
   const [attempt, setAttempt] = useState(0);
-  const [page, setPage] = useState<"documents" | "profile">("documents");
+  const [page, setPage] = useState<"documents" | "chat" | "profile">("documents");
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [photoRevision, setPhotoRevision] = useState(0);
 
@@ -60,6 +61,13 @@ function App() {
           </button>
           <button
             type="button"
+            aria-current={page === "chat" ? "page" : undefined}
+            onClick={() => setPage("chat")}
+          >
+            Chat
+          </button>
+          <button
+            type="button"
             aria-current={page === "profile" ? "page" : undefined}
             onClick={() => setPage("profile")}
           >
@@ -68,7 +76,13 @@ function App() {
         </nav>
       </aside>
       <main className="content">
-        {page === "documents" ? <Documents /> : <Profile onPhotoChange={() => setPhotoRevision((value) => value + 1)} />}
+        {page === "documents" ? (
+          <Documents />
+        ) : page === "chat" ? (
+          <Chat />
+        ) : (
+          <Profile onPhotoChange={() => setPhotoRevision((value) => value + 1)} />
+        )}
       </main>
     </div>
   );

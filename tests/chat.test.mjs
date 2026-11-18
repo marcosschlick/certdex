@@ -1,0 +1,99 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { createComponent } from "./componentHarness.mjs";
+
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+function collectText(node) {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(collectText).join(" ");
+  return collectText(node.props?.children);
+}
+
+test("chat searches documents, shows real file path, and triggers open and reveal", async () => {
+  const calls = [];
+  const invoke = async (command, args) => {
+    calls.push([command, args]);
+    if (command === "search_documents_chat") {
+      return {
+        reply: 'Found 1 document matching "certificacao":',
+        used_embeddings: true,
+        results: [
+          {
+            id: 42,
+            title: "Certificação Rust",
+            document_type: "certificate",
+            organization: "IFSul",
+            issue_date: "2025-05-10",
+            file_path: "/home/user/Certificates/certificate/2025/ifsul/certificacao-rust.pdf",
+            score: 0.92,
+            matched_by: "hybrid",
+          },
+        ],
+      };
+    }
+    return null;
+  };
+
+  const chat = createComponent("Chat", invoke);
+  const input = chat.find((node) => node.type === "input");
+  input.props.onChange({ target: { value: "certificacao" } });
+
+  const form = chat.find((node) => node.type === "form");
+  await form.props.onSubmit({ preventDefault() {} });
+  await flush();
+
+  const reply = chat.find((node) => node.props?.className === "chat-reply");
+  assert.equal(collectText(reply), 'Found 1 document matching "certificacao":');
+
+  const path = chat.find((node) => node.props?.className === "chat-result-path");
+  assert.equal(
+    collectText(path),
+    "/home/user/Certificates/certificate/2025/ifsul/certificacao-rust.pdf",
+  );
+
+  const openButton = chat.find((node) => node.props?.className === "chat-action-open");
+  await openButton.props.onClick();
+
+  const revealButton = chat.find((node) => node.props?.className === "chat-action-reveal");
+  await revealButton.props.onClick();
+
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    ["search_documents_chat", { query: "certificacao" }],
+    ["open_document", { id: 42 }],
+    ["reveal_document", { id: 42 }],
+  ]);
+});
+
+test("chat renders fixed empty reply and error feedback", async () => {
+  let fail = false;
+  const invoke = async (command) => {
+    if (command === "search_documents_chat") {
+      if (fail) throw "Search failed.";
+      return {
+        reply: 'No documents found matching "missing".',
+        used_embeddings: false,
+        results: [],
+      };
+    }
+    return null;
+  };
+
+  const chat = createComponent("Chat", invoke);
+  chat.find((node) => node.type === "input").props.onChange({ target: { value: "missing" } });
+  await chat.find((node) => node.type === "form").props.onSubmit({ preventDefault() {} });
+  await flush();
+
+  const reply = chat.find((node) => node.props?.className === "chat-reply");
+  assert.equal(collectText(reply), 'No documents found matching "missing".');
+  assert.equal(chat.find((node) => node.props?.className === "chat-result-card"), undefined);
+
+  fail = true;
+  chat.find((node) => node.type === "input").props.onChange({ target: { value: "retry" } });
+  await chat.find((node) => node.type === "form").props.onSubmit({ preventDefault() {} });
+  await flush();
+
+  const alert = chat.find((node) => node.props?.role === "alert");
+  assert.equal(collectText(alert), "Search failed.");
+});

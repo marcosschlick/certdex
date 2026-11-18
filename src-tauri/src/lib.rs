@@ -7,6 +7,7 @@ pub mod ollama;
 pub mod pdf;
 mod profile;
 mod regex_extraction;
+mod search;
 
 use tauri::Manager;
 
@@ -28,7 +29,9 @@ pub fn run() {
             pdf::read_selected_document,
             ollama::check_ollama,
             ollama::analyze_pdf_text,
-            document::open_document
+            document::open_document,
+            document::reveal_document,
+            search::search_documents_chat
         ])
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;

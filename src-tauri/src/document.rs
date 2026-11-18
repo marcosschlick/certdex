@@ -216,6 +216,41 @@ pub(crate) async fn open_document(
 }
 
 #[tauri::command]
+pub(crate) async fn reveal_document(
+    app: tauri::AppHandle,
+    pool: State<'_, SqlitePool>,
+    id: i64,
+) -> Result<(), String> {
+    let home = app.path().home_dir().map_err(|error| error.to_string())?;
+    let documents_dir = crate::profile::load_documents_dir(&pool, &home).await?;
+    let path = document_file_path(&pool, &documents_dir, id).await?;
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(format!("/select,{}", path.display()))
+            .spawn()
+            .map_err(|error| error.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&path)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let folder = path.parent().unwrap_or(&documents_dir);
+        std::process::Command::new("xdg-open")
+            .arg(folder)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub(crate) async fn document_hash_exists(
     pool: State<'_, SqlitePool>,
     hash: String,
@@ -1144,6 +1179,63 @@ mod tests {
             fs::remove_dir_all(root).unwrap();
         });
     }
+
+    #[test]
+    fn keeps_fts_index_in_sync_across_register_update_and_delete() {
+        tauri::async_runtime::block_on(async {
+            let root = test_root("document-fts-sync");
+            let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+            crate::database::create_tables(&pool).await.unwrap();
+
+            let mut document = document_input();
+            document.title = Some("Certificação Inicial".into());
+            register_document(&root, &pool, ORIGINAL_PDF, &document)
+                .await
+                .unwrap();
+
+            let id = load_documents(&pool).await.unwrap()[0].id;
+            let count_initial: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM documents_fts WHERE documents_fts MATCH '\"certificacao\"'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(count_initial, 1);
+
+            document.title = Some("Seminário Atualizado".into());
+            update_document_record(&root, &pool, id, &document, None)
+                .await
+                .unwrap();
+
+            let count_old: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM documents_fts WHERE documents_fts MATCH '\"certificacao\"'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let count_new: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM documents_fts WHERE documents_fts MATCH '\"seminario\"'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(count_old, 0);
+            assert_eq!(count_new, 1);
+
+            delete_document_record(&pool, &[root.as_path()], id)
+                .await
+                .unwrap();
+            let count_after_delete: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM documents_fts WHERE document_id = ?",
+            )
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(count_after_delete, 0);
+            let _ = fs::remove_dir_all(root);
+        });
+    }
 }
 use sqlx::SqlitePool;
 use std::{
@@ -1502,7 +1594,11 @@ async fn register_document(
         .await;
     let result = match result {
         Ok(result) => {
-            save_associations(&mut transaction, result.last_insert_rowid(), document).await
+            let document_id = result.last_insert_rowid();
+            match save_associations(&mut transaction, document_id, document).await {
+                Ok(()) => crate::search::sync_document_fts(&mut transaction, document_id).await,
+                Err(error) => Err(error),
+            }
         }
         Err(error) => Err(error.to_string()),
     };
@@ -1568,6 +1664,7 @@ async fn update_document_record(
     }
     save_associations(&mut transaction, id, document).await?;
     if data.is_none() && !relocate {
+        crate::search::sync_document_fts(&mut transaction, id).await?;
         return transaction
             .commit()
             .await
@@ -1617,6 +1714,9 @@ async fn update_document_record(
     };
     if let Err(error) = result {
         return Err(discard_file(&path, error.to_string()));
+    }
+    if let Err(error) = crate::search::sync_document_fts(&mut transaction, id).await {
+        return Err(discard_file(&path, error));
     }
     commit_file_change(transaction, &path, previous.as_ref()).await
 }
@@ -1774,6 +1874,7 @@ async fn delete_document_record(
         .execute(&mut *transaction)
         .await
         .map_err(|error| error.to_string())?;
+    crate::search::delete_document_fts(&mut transaction, id).await?;
     let result = sqlx::query("DELETE FROM documents WHERE id = ?")
         .bind(id)
         .execute(&mut *transaction)
@@ -1823,7 +1924,9 @@ pub(crate) async fn update_document(
 ) -> Result<(), String> {
     let home = app.path().home_dir().map_err(|error| error.to_string())?;
     let documents_dir = crate::profile::load_documents_dir(&pool, &home).await?;
-    update_document_record(&documents_dir, &pool, id, &document, data.as_deref()).await
+    update_document_record(&documents_dir, &pool, id, &document, data.as_deref()).await?;
+    crate::search::try_refresh_document_embedding(&pool, id).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1836,5 +1939,13 @@ pub(crate) async fn store_document(
     let home = app.path().home_dir().map_err(|error| error.to_string())?;
     let documents_dir = crate::profile::load_documents_dir(&pool, &home).await?;
     let path = register_document(&documents_dir, &pool, &data, &document).await?;
-    Ok(path.to_string_lossy().into_owned())
+    let path_string = path.to_string_lossy().into_owned();
+    if let Ok(Some(id)) = sqlx::query_scalar::<_, i64>("SELECT id FROM documents WHERE file_path = ?")
+        .bind(&path_string)
+        .fetch_optional(&*pool)
+        .await
+    {
+        crate::search::try_refresh_document_embedding(&pool, id).await;
+    }
+    Ok(path_string)
 }

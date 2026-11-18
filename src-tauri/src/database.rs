@@ -83,7 +83,8 @@ pub(crate) async fn create_tables(pool: &SqlitePool) -> Result<(), sqlx::Error> 
     ] {
         sqlx::query(statement).execute(pool).await?;
     }
-    crate::entities::migrate(pool).await
+    crate::entities::migrate(pool).await?;
+    crate::search::migrate(pool).await
 }
 
 #[cfg(test)]
