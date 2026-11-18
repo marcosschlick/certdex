@@ -39,7 +39,7 @@ pub(crate) fn resolve_documents_dir(home: &Path, configured: &str) -> Result<Pat
         PathBuf::from(trimmed)
     };
     if !path.is_absolute() {
-        return Err("Documents folder must be an absolute path or start with ~/.".into());
+        return Err("profile.documents_dir_not_absolute".into());
     }
     Ok(path)
 }
@@ -49,7 +49,7 @@ pub(crate) async fn load_documents_dir(pool: &SqlitePool, home: &Path) -> Result
         sqlx::query_scalar("SELECT documents_dir FROM profile WHERE id = 1")
             .fetch_optional(pool)
             .await
-            .map_err(|error| error.to_string())?
+            .map_err(|_| "database.error".to_string())?
             .flatten();
     resolve_documents_dir(home, configured.as_deref().unwrap_or(""))
 }
@@ -83,7 +83,7 @@ async fn save(pool: &SqlitePool, home: &Path, profile: &Profile) -> Result<(), S
     .iter()
     .any(|value| value.trim().is_empty())
     {
-        return Err("Please complete all required profile fields.".into());
+        return Err("profile.required_fields".into());
     }
     resolve_documents_dir(home, &profile.documents_dir)?;
     sqlx::query(
@@ -110,13 +110,13 @@ async fn save(pool: &SqlitePool, home: &Path, profile: &Profile) -> Result<(), S
     .bind(&profile.academic_summary)
     .bind(profile.documents_dir.trim())
     .execute(pool)
-    .await.map_err(|error| error.to_string())?;
+    .await.map_err(|_| "database.error".to_string())?;
     Ok(())
 }
 
 #[tauri::command]
 pub(crate) async fn get_profile(pool: State<'_, SqlitePool>) -> Result<Profile, String> {
-    load(&pool).await.map_err(|error| error.to_string())
+    load(&pool).await.map_err(|_| "database.error".to_string())
 }
 
 #[tauri::command]
@@ -125,11 +125,11 @@ pub(crate) async fn save_profile(
     pool: State<'_, SqlitePool>,
     profile: Profile,
 ) -> Result<(), String> {
-    let home = app.path().home_dir().map_err(|error| error.to_string())?;
+    let home = app.path().home_dir().map_err(|_| "app.directory_unavailable".to_string())?;
     let data_dir = app
         .path()
         .app_data_dir()
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "app.directory_unavailable".to_string())?;
     let previous_dir = load_documents_dir(&pool, &home).await?;
     save(&pool, &home, &profile).await?;
     let next_dir = resolve_documents_dir(&home, &profile.documents_dir)?;
@@ -163,24 +163,24 @@ pub(crate) struct ProfilePhoto {
 }
 
 async fn save_photo(root: &Path, pool: &SqlitePool, data: &[u8]) -> Result<(), String> {
-    let (extension, _) = image_type(data).ok_or("Please select a PNG, JPEG, GIF or WebP image.")?;
+    let (extension, _) = image_type(data).ok_or("profile.invalid_photo_format")?;
     let directory = root.join("profile");
     fs::create_dir_all(&directory)
-        .map_err(|error| format!("Could not create profile folder: {error}"))?;
+        .map_err(|_| "profile.photo_dir_create_failed".to_string())?;
     let mut transaction = pool
         .begin_with("BEGIN IMMEDIATE")
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "database.error".to_string())?;
     let stored_path: Option<String> =
         sqlx::query_scalar("SELECT photo_path FROM profile WHERE id = 1")
             .fetch_optional(&mut *transaction)
             .await
-            .map_err(|error| error.to_string())?
+            .map_err(|_| "database.error".to_string())?
             .flatten();
     let previous = resolve_managed_file(&[&directory], stored_path.as_deref())?;
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|error| error.to_string())?
+        .map_err(|_| "profile.photo_save_failed".to_string())?
         .as_nanos();
     let mut number = 0u64;
     let (path, mut file) = loop {
@@ -192,25 +192,19 @@ async fn save_photo(root: &Path, pool: &SqlitePool, data: &[u8]) -> Result<(), S
         {
             Ok(file) => break (path, file),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => number += 1,
-            Err(error) => return Err(format!("Could not save profile photo: {error}")),
+            Err(_) => return Err("profile.photo_save_failed".into()),
         }
     };
-    if let Err(error) = file.write_all(data) {
+    if file.write_all(data).is_err() {
         drop(file);
-        return Err(discard_file(
-            &path,
-            format!("Could not save profile photo: {error}"),
-        ));
+        return Err(discard_file(&path, "profile.photo_save_failed".into()));
     }
     drop(file);
     let result = sqlx::query("INSERT INTO profile (id, photo_path) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET photo_path = excluded.photo_path")
         .bind(path.to_string_lossy().as_ref())
         .execute(&mut *transaction).await;
-    if let Err(error) = result {
-        return Err(discard_file(
-            &path,
-            format!("Could not save profile photo path: {error}"),
-        ));
+    if result.is_err() {
+        return Err(discard_file(&path, "profile.photo_save_failed".into()));
     }
     commit_file_change(transaction, &path, previous.as_deref()).await
 }
@@ -219,21 +213,21 @@ async fn load_photo(root: &Path, pool: &SqlitePool) -> Result<Option<ProfilePhot
     let path: Option<String> = sqlx::query_scalar("SELECT photo_path FROM profile WHERE id = 1")
         .fetch_optional(pool)
         .await
-        .map_err(|error| error.to_string())?
+        .map_err(|_| "database.error".to_string())?
         .flatten();
     let Some(path) = path else { return Ok(None) };
     let directory = root
         .join("profile")
         .canonicalize()
-        .map_err(|error| format!("Could not access profile folder: {error}"))?;
+        .map_err(|_| "profile.photo_access_failed".to_string())?;
     let path = Path::new(&path)
         .canonicalize()
-        .map_err(|error| format!("Could not access profile photo: {error}"))?;
+        .map_err(|_| "profile.photo_access_failed".to_string())?;
     if !path.starts_with(directory) || !path.is_file() {
-        return Err("Invalid profile photo path.".into());
+        return Err("profile.invalid_photo_path".into());
     }
-    let data = fs::read(path).map_err(|error| format!("Could not read profile photo: {error}"))?;
-    let (_, mime_type) = image_type(&data).ok_or("Invalid profile photo format.")?;
+    let data = fs::read(path).map_err(|_| "profile.photo_read_failed".to_string())?;
+    let (_, mime_type) = image_type(&data).ok_or("profile.invalid_photo_format")?;
     Ok(Some(ProfilePhoto { data, mime_type }))
 }
 
@@ -246,7 +240,7 @@ pub(crate) async fn save_profile_photo(
     let root = app
         .path()
         .app_data_dir()
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "app.directory_unavailable".to_string())?;
     save_photo(&root, &pool, &data).await
 }
 
@@ -258,7 +252,7 @@ pub(crate) async fn get_profile_photo(
     let root = app
         .path()
         .app_data_dir()
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "app.directory_unavailable".to_string())?;
     load_photo(&root, &pool).await
 }
 

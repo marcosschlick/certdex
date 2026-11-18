@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { applyDocumentAnalysis, emptyDocumentForm, matchesDocumentFilters, type DocumentAnalysis, type DocumentForm } from "../documentForm";
+import type { TranslationKey } from "../i18n.ts";
+import { useI18n } from "../i18nContext";
 import { buildReportData, calculateTotalWorkload, generateReportPdf, type ReportProfile } from "../report";
 
 const documentTypes = [
@@ -33,31 +35,36 @@ type PdfReading = {
   source: "pdf_text" | "ocr";
   used_ocr: boolean;
   has_sufficient_text: boolean;
-  warning: string | null;
+  warnings: string[];
   regex_analysis?: DocumentAnalysis | null;
 };
 
+type UiMessage =
+  | { key: TranslationKey; params?: Record<string, string | number> }
+  | { error: unknown; fallback: TranslationKey }
+  | null;
 
 function Documents() {
+  const { locale, t, tDocType, tError, tWarning, formatDate, formatNumber } = useI18n();
   const [formValues, setFormValues] = useState<DocumentForm>(emptyDocumentForm);
   const editedFields = useRef(new Set<string>());
   const [fileName, setFileName] = useState("");
-  const [fileStatus, setFileStatus] = useState("");
+  const [fileStatus, setFileStatus] = useState<UiMessage>(null);
   const [file, setFile] = useState<File | null>(null);
   const [ready, setReady] = useState(false);
   const [saving, setSaving] = useState(false);
   const [reading, setReading] = useState<PdfReading | null>(null);
-  const [readingStatus, setReadingStatus] = useState("");
-  const [analysisStatus, setAnalysisStatus] = useState("");
-  const analysisPending = analysisStatus === "Checking Ollama…" || analysisStatus === "Analyzing document…";
+  const [readingStatus, setReadingStatus] = useState<UiMessage>(null);
+  const [analysisStatus, setAnalysisStatus] = useState<UiMessage>(null);
+  const [analysisPending, setAnalysisPending] = useState(false);
   const [documents, setDocuments] = useState<DocumentItem[] | null>(null);
-  const [listError, setListError] = useState("");
-  const [optionsError, setOptionsError] = useState("");
-  const [openError, setOpenError] = useState("");
-  const [deleteError, setDeleteError] = useState("");
+  const [listError, setListError] = useState(false);
+  const [optionsError, setOptionsError] = useState(false);
+  const [openError, setOpenError] = useState<UiMessage>(null);
+  const [deleteError, setDeleteError] = useState<UiMessage>(null);
   const [generatingReport, setGeneratingReport] = useState(false);
-  const [reportStatus, setReportStatus] = useState("");
-  const [reportError, setReportError] = useState("");
+  const [reportStatus, setReportStatus] = useState<UiMessage>(null);
+  const [reportError, setReportError] = useState<UiMessage>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [filter, setFilter] = useState("");
@@ -76,6 +83,13 @@ function Documents() {
   const editingHeading = useRef<HTMLHeadingElement>(null);
   const [editRevision, setEditRevision] = useState(0);
 
+  function renderMessage(message: UiMessage): string {
+    if (!message) return "";
+    return "key" in message
+      ? t(message.key, message.params)
+      : tError(message.error, message.fallback);
+  }
+
   useEffect(() => () => { selection.current += 1; }, []);
 
   useEffect(() => {
@@ -87,11 +101,11 @@ function Documents() {
   useEffect(() => {
     let active = true;
     window.__TAURI__.core.invoke<DocumentItem[]>("list_documents")
-      .then((items) => { if (active) { setDocuments(items); setListError(""); } })
-      .catch(() => { if (active) setListError("Could not load documents."); });
+      .then((items) => { if (active) { setDocuments(items); setListError(false); } })
+      .catch(() => { if (active) setListError(true); });
     window.__TAURI__.core.invoke<AcademicOptions>("list_academic_options")
-      .then((items) => { if (active) { setOptions(items); setOptionsError(""); } })
-      .catch(() => { if (active) setOptionsError("Could not load existing organizations, events, people and tags."); });
+      .then((items) => { if (active) { setOptions(items); setOptionsError(false); } })
+      .catch(() => { if (active) setOptionsError(true); });
     return () => { active = false; };
   }, [revision]);
 
@@ -104,14 +118,15 @@ function Documents() {
 
   async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const selected = ++selection.current;
-    const file = event.target.files?.[0];
+    const selectedFile = event.target.files?.[0];
     setFile(null);
     setReady(false);
     setFileName("");
-    setFileStatus("");
+    setFileStatus(null);
     setReading(null);
-    setReadingStatus("");
-    setAnalysisStatus("");
+    setReadingStatus(null);
+    setAnalysisStatus(null);
+    setAnalysisPending(false);
     if (editing === null) {
       editedFields.current.clear();
       setFormValues(emptyDocumentForm);
@@ -120,31 +135,35 @@ function Documents() {
       setPeople([]);
       setTags("");
     }
-    if (!file) return;
-    if (![".pdf", ".png", ".jpg", ".jpeg"].some((extension) => file.name.toLowerCase().endsWith(extension))) {
+    if (!selectedFile) return;
+    if (![".pdf", ".png", ".jpg", ".jpeg"].some((extension) => selectedFile.name.toLowerCase().endsWith(extension))) {
       event.target.value = "";
-      setFileStatus("Please select a PDF, PNG, or JPG file.");
+      setFileStatus({ key: "documents.invalidFileExtension" });
       return;
     }
-    setFileName(file.name);
-    setFileStatus("Calculating SHA-256…");
+    setFileName(selectedFile.name);
+    setFileStatus({ key: "documents.hashing" });
     try {
-      const data = Array.from(new Uint8Array(await file.arrayBuffer()));
+      const data = Array.from(new Uint8Array(await selectedFile.arrayBuffer()));
       const hash = await window.__TAURI__.core.invoke<string>("hash_document", { data });
       if (selected !== selection.current) return;
-      setFileStatus("Checking for duplicates…");
+      setFileStatus({ key: "documents.checkingDuplicate" });
       const exists = await window.__TAURI__.core.invoke<boolean>("document_hash_exists", { hash, excludeId: editing });
       if (selected === selection.current) {
-        setFileStatus(exists ? `This file has already been registered.\nSHA-256: ${hash}` : `SHA-256: ${hash}`);
+        setFileStatus(
+          exists
+            ? { key: "documents.duplicateFile", params: { hash } }
+            : { key: "documents.fileHash", params: { hash } },
+        );
       }
       if (selected !== selection.current || exists) return;
-      setReadingStatus("Reading file…");
+      setReadingStatus({ key: "documents.readingFile" });
       try {
         const result = await window.__TAURI__.core.invoke<PdfReading>("read_selected_document", { data });
         if (selected === selection.current) {
           setReading(result.text.trim() ? result : { ...result, text: "" });
-          setReadingStatus("");
-          setFile(file);
+          setReadingStatus(null);
+          setFile(selectedFile);
           setReady(true);
           if (result.text.trim() && result.regex_analysis) {
             setFormValues((current) => applyDocumentAnalysis(current, editedFields.current as Set<keyof DocumentForm>, result.regex_analysis ?? null));
@@ -152,33 +171,41 @@ function Documents() {
         }
         if (selected !== selection.current) return;
         if (!result.text.trim()) {
-          setAnalysisStatus("Text could not be extracted. You can continue filling out the form manually.");
+          setAnalysisStatus({ key: "documents.noExtractedText" });
           return;
         }
-        setAnalysisStatus("Checking Ollama…");
+        setAnalysisPending(true);
+        setAnalysisStatus({ key: "documents.checkingOllama" });
         try {
           const status = await window.__TAURI__.core.invoke<"model_available" | "model_missing" | "unavailable">("check_ollama");
           if (selected !== selection.current) return;
           if (status !== "model_available") {
-            setAnalysisStatus(status === "unavailable" ? "Ollama is unavailable. You can continue filling out the form manually." : "The qwen3:1.7b model is not installed. You can continue filling out the form manually.");
+            setAnalysisPending(false);
+            setAnalysisStatus({
+              key: status === "unavailable" ? "documents.ollamaUnavailable" : "documents.ollamaModelMissing",
+            });
             return;
           }
-          setAnalysisStatus("Analyzing document…");
+          setAnalysisStatus({ key: "documents.analyzing" });
           const analysisResult = await window.__TAURI__.core.invoke<DocumentAnalysis>("analyze_pdf_text", { text: result.text });
           if (selected === selection.current) {
             setFormValues((current) => applyDocumentAnalysis(current, editedFields.current as Set<keyof DocumentForm>, analysisResult));
             if (!editedFields.current.has("organization")) setOrganization(analysisResult.organization ?? "");
             if (!editedFields.current.has("event")) setAcademicEvent(analysisResult.event ?? "");
-            setAnalysisStatus("Analysis complete. Review the fields before registering the document.");
+            setAnalysisPending(false);
+            setAnalysisStatus({ key: "documents.analysisComplete" });
           }
         } catch (error) {
-          if (selected === selection.current) setAnalysisStatus(typeof error === "string" ? error : "Could not analyze the document.");
+          if (selected === selection.current) {
+            setAnalysisPending(false);
+            setAnalysisStatus({ error, fallback: "documents.analysisError" });
+          }
         }
       } catch (error) {
-        if (selected === selection.current) setReadingStatus(typeof error === "string" ? error : "Could not read the file.");
+        if (selected === selection.current) setReadingStatus({ error, fallback: "documents.readError" });
       }
     } catch {
-      if (selected === selection.current) setFileStatus("Could not process the file. Check the file and try again.");
+      if (selected === selection.current) setFileStatus({ key: "documents.processError" });
     }
   }
 
@@ -186,41 +213,42 @@ function Documents() {
     event.preventDefault();
     if (saving || analysisPending || (editing === null && (!file || !reading || !ready)) || (editing !== null && fileName && (!file || !reading || !ready))) return;
     selection.current += 1;
-    setReadingStatus("");
-    setAnalysisStatus("");
+    setReadingStatus(null);
+    setAnalysisStatus(null);
+    setAnalysisPending(false);
     const value = (field: keyof DocumentForm) => formValues[field].trim() || null;
     const workload = value("workload_hours");
     setSaving(true);
-    setFileStatus("Saving file…");
+    setFileStatus({ key: "documents.savingFile" });
     try {
       const document = {
-          document_type: formValues.type,
-          title: value("title"),
-          role: value("role"),
-          issue_date: value("issue_date"),
-          start_date: value("start_date"),
-          end_date: value("end_date"),
-          workload_hours: workload === null ? null : Number(workload),
-          city: value("city"),
-          country: value("country"),
-          validation_code: value("validation_code"),
-          validation_url: value("validation_url"),
-          original_filename: file?.name ?? "",
-          extracted_text: reading?.text ?? "",
-          organization: organization.trim() || null,
-          event: academicEvent.trim() || null,
-          people,
-          tags: tags.split(",").map((value) => value.trim()).filter(Boolean),
+        document_type: formValues.type,
+        title: value("title"),
+        role: value("role"),
+        issue_date: value("issue_date"),
+        start_date: value("start_date"),
+        end_date: value("end_date"),
+        workload_hours: workload === null ? null : Number(workload),
+        city: value("city"),
+        country: value("country"),
+        validation_code: value("validation_code"),
+        validation_url: value("validation_url"),
+        original_filename: file?.name ?? "",
+        extracted_text: reading?.text ?? "",
+        organization: organization.trim() || null,
+        event: academicEvent.trim() || null,
+        people,
+        tags: tags.split(",").map((entry) => entry.trim()).filter(Boolean),
       };
-      let message: string;
+      let nextMessage: UiMessage;
       if (editing !== null) {
         const data = file ? Array.from(new Uint8Array(await file.arrayBuffer())) : null;
         await window.__TAURI__.core.invoke("update_document", { id: editing, document, data });
-        message = "Document updated.";
+        nextMessage = { key: "documents.updated" };
       } else {
         const data = Array.from(new Uint8Array(await file!.arrayBuffer()));
         const path = await window.__TAURI__.core.invoke<string>("store_document", { data, document });
-        message = `Document registered: ${path}`;
+        nextMessage = { key: "documents.registered", params: { path } };
       }
       setReady(false);
       setFile(null);
@@ -234,10 +262,10 @@ function Documents() {
       setPeople([]);
       setTags("");
       if (fileInput.current) fileInput.current.value = "";
-      setFileStatus(message);
+      setFileStatus(nextMessage);
       setRevision((current) => current + 1);
     } catch (error) {
-      setFileStatus(typeof error === "string" ? error : "Could not save the file. Please try again.");
+      setFileStatus({ error, fallback: "documents.saveError" });
     } finally {
       setSaving(false);
     }
@@ -254,10 +282,11 @@ function Documents() {
     setFile(null);
     setReady(false);
     setFileName("");
-    setFileStatus("");
+    setFileStatus(null);
     setReading(null);
-    setReadingStatus("");
-    setAnalysisStatus("");
+    setReadingStatus(null);
+    setAnalysisStatus(null);
+    setAnalysisPending(false);
     editedFields.current = new Set([...Object.keys(emptyDocumentForm), "organization", "event"]);
     setFormValues({ type: document.type, title: document.title ?? "", role: document.role ?? "", issue_date: document.issue_date ?? "", start_date: document.start_date ?? "", end_date: document.end_date ?? "", workload_hours: document.workload_hours?.toString() ?? "", city: document.city ?? "", country: document.country ?? "", validation_code: document.validation_code ?? "", validation_url: document.validation_url ?? "" });
     setOrganization(document.organization ?? "");
@@ -274,37 +303,38 @@ function Documents() {
     setReady(false);
     setFileName("");
     setReading(null);
-    setReadingStatus("");
-    setAnalysisStatus("");
+    setReadingStatus(null);
+    setAnalysisStatus(null);
+    setAnalysisPending(false);
     setFormValues(emptyDocumentForm);
     setOrganization("");
     setAcademicEvent("");
     setPeople([]);
     setTags("");
-    setFileStatus("");
+    setFileStatus(null);
     if (fileInput.current) fileInput.current.value = "";
   }
 
   async function openDocument(id: number) {
-    setOpenError("");
+    setOpenError(null);
     try {
       await window.__TAURI__.core.invoke("open_document", { id });
-    } catch {
-      setOpenError("Could not open the file. Check that the file is available.");
+    } catch (error) {
+      setOpenError({ error, fallback: "documents.openError" });
     }
   }
 
   async function deleteDocument(id: number) {
     if (deleting) return;
     setDeleting(true);
-    setDeleteError("");
+    setDeleteError(null);
     try {
       await window.__TAURI__.core.invoke("delete_document", { id });
       setConfirmDeleteId(null);
       if (editing === id) cancelEdit();
       setRevision((current) => current + 1);
     } catch (error) {
-      setDeleteError(typeof error === "string" ? error : "Could not delete the document.");
+      setDeleteError({ error, fallback: "documents.deleteError" });
     } finally {
       setDeleting(false);
     }
@@ -313,44 +343,50 @@ function Documents() {
   async function generateReport() {
     if (generatingReport || !visibleDocuments || visibleDocuments.length === 0) return;
     setGeneratingReport(true);
-    setReportStatus("");
-    setReportError("");
+    setReportStatus(null);
+    setReportError(null);
     try {
       const profile = await window.__TAURI__.core.invoke<ReportProfile>("get_profile");
       const report = buildReportData(profile, visibleDocuments, { search, type: filter, year, tag });
-      const pdfBytes = generateReportPdf(report);
-      const filename = `certdex-report-${new Date().toISOString().slice(0, 10)}.pdf`;
+      const generatedDate = new Date().toISOString().slice(0, 10);
+      const pdfBytes = generateReportPdf(report, generatedDate, locale);
+      const filename = `certdex-report-${generatedDate}.pdf`;
       const path = await window.__TAURI__.core.invoke<string>("save_report_pdf", {
         data: Array.from(pdfBytes),
         filename,
       });
-      setReportStatus(`Report saved: ${path}`);
+      setReportStatus({ key: "documents.reportSaved", params: { path } });
     } catch (error) {
-      setReportError(typeof error === "string" ? error : "Could not generate the PDF report.");
+      setReportError({ error, fallback: "documents.reportError" });
     } finally {
       setGeneratingReport(false);
     }
   }
 
+  const documentDisplayTitle = (document: DocumentItem) =>
+    document.title || t("documents.fallbackDocumentTitle", { id: document.id });
+
+  const emptyValue = t("documents.emptyValue");
+
   return (
     <section className="profile">
-      <h1>Documents</h1>
+      <h1>{t("documents.title")}</h1>
       <section className="documents-list" aria-labelledby="documents-list-heading">
-        <h2 id="documents-list-heading">Registered documents</h2>
-        {optionsError && <p role="alert">{optionsError}</p>}
+        <h2 id="documents-list-heading">{t("documents.registeredTitle")}</h2>
+        {optionsError && <p role="alert">{t("documents.optionsLoadError")}</p>}
         <div className="document-filters">
-          <label className="document-filter"><span>Search documents</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
+          <label className="document-filter"><span>{t("documents.searchLabel")}</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
           <label className="document-filter">
-            <span>Filter by type</span>
+            <span>{t("documents.filterTypeLabel")}</span>
             <select value={filter} onChange={(event) => setFilter(event.target.value)}>
-              <option value="">All types</option>
-              {documentTypes.map((type) => <option key={type} value={type}>{type[0].toUpperCase() + type.slice(1)}</option>)}
+              <option value="">{t("documents.allTypes")}</option>
+              {documentTypes.map((type) => <option key={type} value={type}>{tDocType(type)}</option>)}
             </select>
           </label>
-          <label className="document-filter"><span>Filter by year</span><select value={year} onChange={(event) => setYear(event.target.value)}><option value="">All years</option>{years.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
-          <label className="document-filter"><span>Filter by tag</span><select value={tag} onChange={(event) => setTag(event.target.value)}><option value="">All tags</option>{options.tags.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+          <label className="document-filter"><span>{t("documents.filterYearLabel")}</span><select value={year} onChange={(event) => setYear(event.target.value)}><option value="">{t("documents.allYears")}</option>{years.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+          <label className="document-filter"><span>{t("documents.filterTagLabel")}</span><select value={tag} onChange={(event) => setTag(event.target.value)}><option value="">{t("documents.allTags")}</option>{options.tags.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
         </div>
-        {documents && !listError && <p>Total workload: {totalHours} hours</p>}
+        {documents && !listError && <p>{t("documents.totalWorkload", { hours: formatNumber(totalHours) })}</p>}
         {documents && !listError && (
           <div className="profile-actions">
             <button
@@ -358,36 +394,36 @@ function Documents() {
               disabled={generatingReport || !visibleDocuments?.length}
               onClick={generateReport}
             >
-              {generatingReport ? "Generating PDF…" : "Generate PDF report"}
+              {generatingReport ? t("documents.generatingReport") : t("documents.generateReport")}
             </button>
-            {reportStatus && <p role="status">{reportStatus}</p>}
-            {reportError && <p role="alert">{reportError}</p>}
+            {reportStatus && <p role="status">{renderMessage(reportStatus)}</p>}
+            {reportError && <p role="alert">{renderMessage(reportError)}</p>}
           </div>
         )}
-        {listError ? <p role="alert">{listError}</p> : documents === null ? <p role="status">Loading documents…</p> : (
+        {listError ? <p role="alert">{t("documents.loadError")}</p> : documents === null ? <p role="status">{t("documents.loading")}</p> : (
           visibleDocuments?.length === 0 ? (
-            <p>No documents found.</p>
+            <p>{t("documents.empty")}</p>
           ) : (
             <div className="documents-table">
               <table>
-                <thead><tr><th>Title</th><th>Type</th><th>Issue date</th><th>Workload (hours)</th><th>File</th><th>Edit</th><th>Delete</th></tr></thead>
+                <thead><tr><th>{t("documents.tableTitle")}</th><th>{t("documents.tableType")}</th><th>{t("documents.tableIssueDate")}</th><th>{t("documents.tableWorkload")}</th><th>{t("documents.tableFile")}</th><th>{t("documents.tableEdit")}</th><th>{t("documents.tableDelete")}</th></tr></thead>
                 <tbody>
                   {visibleDocuments?.map((document) => (
                     <tr key={document.id}>
-                      <td>{document.title || "—"}</td>
-                      <td>{document.type}</td>
-                      <td>{document.issue_date || "—"}</td>
-                      <td>{document.workload_hours ?? "—"}</td>
-                      <td><button type="button" className="open-pdf" onClick={() => openDocument(document.id)} aria-label={`Open file for ${document.title || `document ${document.id}`}`}>Open file</button></td>
-                      <td><button type="button" className="open-pdf" disabled={saving || deleting} onClick={() => editDocument(document)} aria-label={`Edit ${document.title || `document ${document.id}`}`}>Edit</button></td>
+                      <td>{document.title || emptyValue}</td>
+                      <td>{tDocType(document.type)}</td>
+                      <td>{formatDate(document.issue_date, emptyValue)}</td>
+                      <td>{document.workload_hours !== null ? formatNumber(document.workload_hours) : emptyValue}</td>
+                      <td><button type="button" className="open-pdf" onClick={() => openDocument(document.id)} aria-label={t("documents.openFileAria", { title: documentDisplayTitle(document) })}>{t("documents.openFile")}</button></td>
+                      <td><button type="button" className="open-pdf" disabled={saving || deleting} onClick={() => editDocument(document)} aria-label={t("documents.editAria", { title: documentDisplayTitle(document) })}>{t("documents.edit")}</button></td>
                       <td>
                         {confirmDeleteId === document.id ? (
                           <span className="delete-actions">
-                            <button type="button" className="delete-confirm" disabled={deleting} onClick={() => deleteDocument(document.id)} aria-label={`Confirm delete ${document.title || `document ${document.id}`}`}>Confirm delete</button>
-                            <button type="button" className="open-pdf" disabled={deleting} onClick={() => setConfirmDeleteId(null)}>Cancel</button>
+                            <button type="button" className="delete-confirm" disabled={deleting} onClick={() => deleteDocument(document.id)} aria-label={t("documents.confirmDeleteAria", { title: documentDisplayTitle(document) })}>{t("documents.confirmDelete")}</button>
+                            <button type="button" className="open-pdf" disabled={deleting} onClick={() => setConfirmDeleteId(null)}>{t("documents.cancel")}</button>
                           </span>
                         ) : (
-                          <button type="button" className="open-pdf" disabled={saving || deleting} onClick={() => { setDeleteError(""); setConfirmDeleteId(document.id); }} aria-label={`Delete ${document.title || `document ${document.id}`}`}>Delete</button>
+                          <button type="button" className="open-pdf" disabled={saving || deleting} onClick={() => { setDeleteError(null); setConfirmDeleteId(document.id); }} aria-label={t("documents.deleteAria", { title: documentDisplayTitle(document) })}>{t("documents.delete")}</button>
                         )}
                       </td>
                     </tr>
@@ -397,57 +433,57 @@ function Documents() {
             </div>
           )
         )}
-        {openError && <p role="alert">{openError}</p>}
-        {deleteError && <p role="alert">{deleteError}</p>}
+        {openError && <p role="alert">{renderMessage(openError)}</p>}
+        {deleteError && <p role="alert">{renderMessage(deleteError)}</p>}
       </section>
-      <h2 ref={editingHeading} tabIndex={-1} className="document-form-heading">{editing === null ? "Register a document" : "Edit document"}</h2>
+      <h2 ref={editingHeading} tabIndex={-1} className="document-form-heading">{editing === null ? t("documents.formRegisterTitle") : t("documents.formEditTitle")}</h2>
       <form onSubmit={handleSubmit}>
         <fieldset className="profile-fields" disabled={saving}>
           <label>
-            <span>Document type</span>
+            <span>{t("documents.fieldType")}</span>
             <select name="type" value={formValues.type} required onChange={handleFieldChange}>
-              <option value="">Select a type</option>
-              {documentTypes.map((type) => <option key={type} value={type}>{type[0].toUpperCase() + type.slice(1)}</option>)}
+              <option value="">{t("documents.selectType")}</option>
+              {documentTypes.map((type) => <option key={type} value={type}>{tDocType(type)}</option>)}
             </select>
           </label>
-          <label><span>Title</span><input name="title" value={formValues.title} onChange={handleFieldChange} /></label>
-          <label><span>Role</span><input name="role" value={formValues.role} onChange={handleFieldChange} /></label>
-          <label><span>Issue date</span><input name="issue_date" value={formValues.issue_date} onChange={handleFieldChange} type="date" /></label>
-          <label><span>Start date</span><input name="start_date" value={formValues.start_date} onChange={handleFieldChange} type="date" /></label>
-          <label><span>End date</span><input name="end_date" value={formValues.end_date} onChange={handleFieldChange} type="date" /></label>
-          <label><span>Workload (hours)</span><input name="workload_hours" value={formValues.workload_hours} onChange={handleFieldChange} type="number" min="0" step="any" /></label>
-          <label><span>City</span><input name="city" value={formValues.city} onChange={handleFieldChange} /></label>
-          <label><span>Country</span><input name="country" value={formValues.country} onChange={handleFieldChange} /></label>
-          <label><span>Validation code</span><input name="validation_code" value={formValues.validation_code} onChange={handleFieldChange} /></label>
-          <label className="profile-field-wide"><span>Validation URL</span><input name="validation_url" value={formValues.validation_url} onChange={handleFieldChange} type="url" /></label>
-          <label><span>Organization</span><input list="organization-options" value={organization} onChange={(event) => { editedFields.current.add("organization"); setOrganization(event.target.value); }} /></label>
-          <label><span>Event</span><input list="event-options" value={academicEvent} onChange={(event) => { editedFields.current.add("event"); setAcademicEvent(event.target.value); }} /></label>
+          <label><span>{t("documents.fieldTitle")}</span><input name="title" value={formValues.title} onChange={handleFieldChange} /></label>
+          <label><span>{t("documents.fieldRole")}</span><input name="role" value={formValues.role} onChange={handleFieldChange} /></label>
+          <label><span>{t("documents.fieldIssueDate")}</span><input name="issue_date" value={formValues.issue_date} onChange={handleFieldChange} type="date" /></label>
+          <label><span>{t("documents.fieldStartDate")}</span><input name="start_date" value={formValues.start_date} onChange={handleFieldChange} type="date" /></label>
+          <label><span>{t("documents.fieldEndDate")}</span><input name="end_date" value={formValues.end_date} onChange={handleFieldChange} type="date" /></label>
+          <label><span>{t("documents.fieldWorkload")}</span><input name="workload_hours" value={formValues.workload_hours} onChange={handleFieldChange} type="number" min="0" step="any" /></label>
+          <label><span>{t("documents.fieldCity")}</span><input name="city" value={formValues.city} onChange={handleFieldChange} /></label>
+          <label><span>{t("documents.fieldCountry")}</span><input name="country" value={formValues.country} onChange={handleFieldChange} /></label>
+          <label><span>{t("documents.fieldValidationCode")}</span><input name="validation_code" value={formValues.validation_code} onChange={handleFieldChange} /></label>
+          <label className="profile-field-wide"><span>{t("documents.fieldValidationUrl")}</span><input name="validation_url" value={formValues.validation_url} onChange={handleFieldChange} type="url" /></label>
+          <label><span>{t("documents.fieldOrganization")}</span><input list="organization-options" value={organization} onChange={(event) => { editedFields.current.add("organization"); setOrganization(event.target.value); }} /></label>
+          <label><span>{t("documents.fieldEvent")}</span><input list="event-options" value={academicEvent} onChange={(event) => { editedFields.current.add("event"); setAcademicEvent(event.target.value); }} /></label>
           <datalist id="organization-options">{options.organizations.map((name) => <option key={name} value={name} />)}</datalist>
           <datalist id="event-options">{options.events.map((name) => <option key={name} value={name} />)}</datalist>
           <datalist id="people-options">{options.people.map((name) => <option key={name} value={name} />)}</datalist>
-          <label className="profile-field-wide"><span>Tags (separated by commas)</span><input value={tags} onChange={(event) => setTags(event.target.value)} /></label>
-          {options.tags.length > 0 && <div className="profile-field-wide existing-tags">Existing tags: {options.tags.map((name) => <button type="button" className="open-pdf" key={name} onClick={() => setTags((current) => current.split(",").some((value) => value.trim().toLocaleLowerCase() === name.toLocaleLowerCase()) ? current : [current.trim(), name].filter(Boolean).join(", "))}>{name}</button>)}</div>}
+          <label className="profile-field-wide"><span>{t("documents.fieldTags")}</span><input value={tags} onChange={(event) => setTags(event.target.value)} /></label>
+          {options.tags.length > 0 && <div className="profile-field-wide existing-tags">{t("documents.existingTags")} {options.tags.map((name) => <button type="button" className="open-pdf" key={name} onClick={() => setTags((current) => current.split(",").some((value) => value.trim().toLocaleLowerCase() === name.toLocaleLowerCase()) ? current : [current.trim(), name].filter(Boolean).join(", "))}>{name}</button>)}</div>}
           <div className="profile-field-wide">
-            <p>People</p>
+            <p>{t("documents.peopleHeading")}</p>
             {people.map((person, index) => <div className="person-row" key={index}>
-              <label><span>Name</span><input list="people-options" value={person.name} required onChange={(event) => setPeople((current) => current.map((item, i) => i === index ? { ...item, name: event.target.value } : item))} /></label>
-              <label><span>Role</span><input value={person.role} required onChange={(event) => setPeople((current) => current.map((item, i) => i === index ? { ...item, role: event.target.value } : item))} /></label>
-              <button type="button" className="open-pdf" onClick={() => setPeople((current) => current.filter((_, i) => i !== index))}>Remove</button>
+              <label><span>{t("documents.personName")}</span><input list="people-options" value={person.name} required onChange={(event) => setPeople((current) => current.map((item, i) => i === index ? { ...item, name: event.target.value } : item))} /></label>
+              <label><span>{t("documents.personRole")}</span><input value={person.role} required onChange={(event) => setPeople((current) => current.map((item, i) => i === index ? { ...item, role: event.target.value } : item))} /></label>
+              <button type="button" className="open-pdf" onClick={() => setPeople((current) => current.filter((_, i) => i !== index))}>{t("documents.removePerson")}</button>
             </div>)}
-            <button type="button" className="open-pdf" onClick={() => setPeople((current) => [...current, { name: "", role: "" }])}>Add person</button>
+            <button type="button" className="open-pdf" onClick={() => setPeople((current) => [...current, { name: "", role: "" }])}>{t("documents.addPerson")}</button>
           </div>
-          <label className="profile-field-wide"><span>{editing === null ? "Document file (PDF, PNG, JPG)" : "Replace file (optional)"}</span><input ref={fileInput} type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" onChange={handleFileChange} /></label>
+          <label className="profile-field-wide"><span>{editing === null ? t("documents.fileLabel") : t("documents.replaceFileLabel")}</span><input ref={fileInput} type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" onChange={handleFileChange} /></label>
         </fieldset>
-        {readingStatus && <p role="status">{readingStatus}</p>}
-        {reading?.warning && <p role="alert">{reading.warning}</p>}
-        {analysisStatus && <p role="status">{analysisStatus}</p>}
+        {readingStatus && <p role="status">{renderMessage(readingStatus)}</p>}
+        {reading?.warnings.map((warning) => <p role="alert" key={warning}>{tWarning(warning)}</p>)}
+        {analysisStatus && <p role="status">{renderMessage(analysisStatus)}</p>}
         <div className="document-file" aria-live="polite">
-          {fileName && <p>Selected file: {fileName}</p>}
-          {fileStatus && <p>{fileStatus}</p>}
+          {fileName && <p>{t("documents.selectedFile", { name: fileName })}</p>}
+          {fileStatus && <p>{renderMessage(fileStatus)}</p>}
         </div>
         <div className="profile-actions">
-          <button type="submit" disabled={saving || analysisPending || ((editing === null || !!fileName) && !ready)}>{saving ? "Saving…" : editing === null ? "Register document" : "Save changes"}</button>
-          {editing !== null && <button type="button" disabled={saving} onClick={cancelEdit}>Cancel</button>}
+          <button type="submit" disabled={saving || analysisPending || ((editing === null || !!fileName) && !ready)}>{saving ? t("documents.saving") : editing === null ? t("documents.registerButton") : t("documents.saveChanges")}</button>
+          {editing !== null && <button type="button" disabled={saving} onClick={cancelEdit}>{t("documents.cancel")}</button>}
         </div>
       </form>
     </section>

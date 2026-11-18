@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useI18n } from "./i18nContext";
 import Chat from "./pages/Chat";
 import Documents from "./pages/Documents";
 import Profile from "./pages/Profile";
@@ -6,6 +7,7 @@ import { isProfileComplete } from "./profile";
 import "./App.css";
 
 function App() {
+  const { t } = useI18n();
   const [setup, setSetup] = useState<"loading" | "required" | "complete" | "error">("loading");
   const [attempt, setAttempt] = useState(0);
   const [page, setPage] = useState<"documents" | "chat" | "profile">("documents");
@@ -38,8 +40,8 @@ function App() {
     return (
       <main className="content">
         {setup === "required" ? <Profile setup onComplete={() => setSetup("complete")} /> :
-          setup === "error" ? <div className="profile-actions"><p role="alert">Could not load the profile.</p><button type="button" onClick={() => { setSetup("loading"); setAttempt((value) => value + 1); }}>Try again</button></div> :
-          <p role="status">Loading profile…</p>}
+          setup === "error" ? <div className="profile-actions"><p role="alert">{t("app.loadProfileError")}</p><button type="button" onClick={() => { setSetup("loading"); setAttempt((value) => value + 1); }}>{t("app.tryAgain")}</button></div> :
+          <p role="status">{t("app.loadingProfile")}</p>}
       </main>
     );
   }
@@ -48,33 +50,33 @@ function App() {
     <div className="app">
       <aside className="sidebar">
         <div className="sidebar-photo">
-          {photoUrl ? <img src={photoUrl} alt="Profile" /> : <span aria-label="No profile photo">●</span>}
+          {photoUrl ? <img src={photoUrl} alt={t("app.profileAlt")} /> : <span aria-label={t("app.noProfilePhoto")}>●</span>}
         </div>
         <div className="brand">
           <img src="/certdex-logo.svg" alt="" className="brand-logo" />
           <span>Certdex</span>
         </div>
-        <nav aria-label="Main navigation">
+        <nav aria-label={t("app.mainNavigation")}>
           <button
             type="button"
             aria-current={page === "documents" ? "page" : undefined}
             onClick={() => setPage("documents")}
           >
-            Documents
+            {t("nav.documents")}
           </button>
           <button
             type="button"
             aria-current={page === "chat" ? "page" : undefined}
             onClick={() => setPage("chat")}
           >
-            Chat
+            {t("nav.chat")}
           </button>
           <button
             type="button"
             aria-current={page === "profile" ? "page" : undefined}
             onClick={() => setPage("profile")}
           >
-            Profile
+            {t("nav.profile")}
           </button>
         </nav>
       </aside>

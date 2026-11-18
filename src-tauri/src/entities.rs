@@ -128,7 +128,7 @@ pub(crate) async fn named_id(
     name: &str,
 ) -> Result<i64, String> {
     if !["organizations", "events", "people", "tags"].contains(&table) {
-        return Err("Invalid association type.".into());
+        return Err("document.invalid_association_type".into());
     }
     let key = normalize_name(name);
     sqlx::query(AssertSqlSafe(format!(
@@ -138,14 +138,14 @@ pub(crate) async fn named_id(
     .bind(&key)
     .execute(&mut *connection)
     .await
-    .map_err(|error| error.to_string())?;
+    .map_err(|_| "database.error".to_string())?;
     sqlx::query_scalar(AssertSqlSafe(format!(
         "SELECT id FROM {table} WHERE normalized_name = ?"
     )))
     .bind(key)
     .fetch_one(connection)
     .await
-    .map_err(|error| error.to_string())
+    .map_err(|_| "database.error".to_string())
 }
 
 #[cfg(test)]

@@ -15,6 +15,7 @@
 - Do not write comments in implementation code. Code should be self-explanatory through clear naming and structure.
 - Follow the colors and UI rules defined in `color-palette.md`.
 - Code, identifiers, commits and technical artifacts must be written in English.
+- All user-facing text must be available in English, Brazilian Portuguese and Uruguayan Spanish. Never hardcode UI strings.
 
 ## Project Context
 

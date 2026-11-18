@@ -14,17 +14,17 @@ pub(crate) fn resolve_managed_file(
     let path = match Path::new(stored_path).canonicalize() {
         Ok(path) => path,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.to_string()),
+        Err(_) => return Err("document.invalid_managed_file_path".into()),
     };
     if !path.is_file() {
-        return Err("Invalid managed file path.".into());
+        return Err("document.invalid_managed_file_path".into());
     }
     let allowed = roots
         .iter()
         .filter_map(|root| root.canonicalize().ok())
         .any(|root| path.starts_with(root));
     if !allowed {
-        return Err("Invalid managed file path.".into());
+        return Err("document.invalid_managed_file_path".into());
     }
     Ok(Some(path))
 }
@@ -36,16 +36,13 @@ pub(crate) fn read_managed_file(
     let Some(path) = resolve_managed_file(roots, stored_path)? else {
         return Ok(None);
     };
-    let data = fs::read(&path).map_err(|error| error.to_string())?;
+    let data = fs::read(&path).map_err(|_| "document.file_not_found".to_string())?;
     Ok(Some((path, data)))
 }
 
 pub(crate) fn discard_file(path: &Path, error: String) -> String {
-    match fs::remove_file(path) {
-        Ok(()) => error,
-        Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => error,
-        Err(cleanup) => format!("{error}. Could not remove {}: {cleanup}", path.display()),
-    }
+    let _ = fs::remove_file(path);
+    error
 }
 
 pub(crate) async fn commit_file_change(
@@ -53,17 +50,14 @@ pub(crate) async fn commit_file_change(
     new_path: &Path,
     previous_path: Option<&Path>,
 ) -> Result<(), String> {
-    if let Err(error) = transaction.commit().await {
-        return Err(discard_file(new_path, error.to_string()));
+    if transaction.commit().await.is_err() {
+        return Err(discard_file(new_path, "database.error".into()));
     }
     if let Some(path) = previous_path
         && let Err(error) = fs::remove_file(path)
         && error.kind() != std::io::ErrorKind::NotFound
     {
-        return Err(format!(
-            "Changes were saved, but the previous file could not be removed ({}): {error}. The new file was preserved.",
-            path.display()
-        ));
+        return Err("document.previous_file_cleanup_failed".into());
     }
     Ok(())
 }
@@ -157,8 +151,7 @@ mod tests {
             let error = commit_file_change(transaction, &next, Some(previous.as_path()))
                 .await
                 .unwrap_err();
-            assert!(error.contains("Changes were saved"));
-            assert!(error.contains("previous file could not be removed"));
+            assert_eq!(error, "document.previous_file_cleanup_failed");
             assert_eq!(fs::read(&next).unwrap(), b"new data");
             assert!(previous.is_dir());
             assert_eq!(

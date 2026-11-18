@@ -62,14 +62,14 @@ fn truncate_chars(text: &str, max_chars: usize) -> &str {
 pub(crate) async fn generate_embedding_at(url: &str, text: &str) -> Result<Vec<f32>, String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        return Err("Cannot generate embedding for empty text.".into());
+        return Err("ollama.empty_embedding_text".into());
     }
     let input = truncate_chars(trimmed, MAX_EMBED_CHARS);
     let client = reqwest::Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(15))
         .build()
-        .map_err(|error| format!("Could not create Ollama client: {error}"))?;
+        .map_err(|_| "ollama.client_failed".to_string())?;
     let response = client
         .post(url)
         .json(&serde_json::json!({
@@ -78,19 +78,19 @@ pub(crate) async fn generate_embedding_at(url: &str, text: &str) -> Result<Vec<f
         }))
         .send()
         .await
-        .map_err(|error| format!("Could not contact Ollama: {error}"))?
+        .map_err(|_| "ollama.contact_failed".to_string())?
         .error_for_status()
-        .map_err(|error| format!("Ollama embedding request failed: {error}"))?;
+        .map_err(|_| "ollama.embedding_failed".to_string())?;
     let parsed: EmbedResponse = response
         .json()
         .await
-        .map_err(|error| format!("Invalid Ollama embedding response: {error}"))?;
+        .map_err(|_| "ollama.invalid_embedding_response".to_string())?;
     let embedding = parsed
         .embeddings
         .into_iter()
         .next()
         .filter(|values| !values.is_empty())
-        .ok_or_else(|| "Ollama returned an empty embedding.".to_string())?;
+        .ok_or_else(|| "ollama.empty_embedding".to_string())?;
     Ok(embedding)
 }
 
@@ -101,19 +101,19 @@ async fn analyze_document(text: &str) -> Result<DocumentAnalysis, String> {
 #[tauri::command]
 pub(crate) async fn analyze_pdf_text(text: String) -> Result<DocumentAnalysis, String> {
     if text.trim().is_empty() {
-        return Err("The PDF does not contain text to analyze.".into());
+        return Err("ollama.empty_analysis_text".into());
     }
     analyze_document(&text).await
 }
 
 async fn analyze_at(url: &str, text: &str) -> Result<DocumentAnalysis, String> {
     let schema: serde_json::Value = serde_json::from_str(DOCUMENT_ANALYSIS_SCHEMA)
-        .map_err(|error| format!("Invalid document analysis schema: {error}"))?;
+        .map_err(|_| "ollama.invalid_schema".to_string())?;
     let client = reqwest::Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(180))
         .build()
-        .map_err(|error| format!("Could not create Ollama client: {error}"))?;
+        .map_err(|_| "ollama.client_failed".to_string())?;
     let response = client.post(url).json(&serde_json::json!({
         "model": MODEL,
         "stream": false,
@@ -124,14 +124,14 @@ async fn analyze_at(url: &str, text: &str) -> Result<DocumentAnalysis, String> {
         ],
         "options": {"temperature": 0}
     }))
-    .send().await.map_err(|error| format!("Could not contact Ollama: {error}"))?
-    .error_for_status().map_err(|error| format!("Ollama analysis request failed: {error}"))?;
+    .send().await.map_err(|_| "ollama.contact_failed".to_string())?
+    .error_for_status().map_err(|_| "ollama.analysis_failed".to_string())?;
     let response: ChatResponse = response
         .json()
         .await
-        .map_err(|error| format!("Invalid Ollama response: {error}"))?;
+        .map_err(|_| "ollama.invalid_response".to_string())?;
     let llm: LlmDocumentAnalysis = serde_json::from_str(&response.message.content)
-        .map_err(|error| format!("Invalid document analysis: {error}"))?;
+        .map_err(|_| "ollama.invalid_analysis".to_string())?;
     let regex = extract_with_regex(text);
     Ok(combine_analysis(regex, llm))
 }
@@ -141,21 +141,21 @@ async fn check_status(url: &str) -> Result<OllamaStatus, String> {
         .no_proxy()
         .timeout(Duration::from_secs(3))
         .build()
-        .map_err(|error| format!("Could not create Ollama client: {error}"))?;
+        .map_err(|_| "ollama.client_failed".to_string())?;
     let response = match client.get(url).send().await {
         Ok(response) => response,
         Err(error) if error.is_connect() || error.is_timeout() => {
             return Ok(OllamaStatus::Unavailable);
         }
-        Err(error) => return Err(format!("Could not contact Ollama: {error}")),
+        Err(_) => return Err("ollama.contact_failed".into()),
     };
     let response = response
         .error_for_status()
-        .map_err(|error| format!("Ollama model list request failed: {error}"))?;
+        .map_err(|_| "ollama.model_list_failed".to_string())?;
     let models: ModelList = response
         .json()
         .await
-        .map_err(|error| format!("Invalid Ollama model list response: {error}"))?;
+        .map_err(|_| "ollama.invalid_model_list_response".to_string())?;
     Ok(if models.models.iter().any(|model| model.name == MODEL) {
         OllamaStatus::ModelAvailable
     } else {
@@ -289,11 +289,9 @@ mod tests {
             assert!(prompt.contains("conference, workshop, or academic event"));
             assert!(!prompt.contains("YYYY-MM-DD"));
             let invalid = respond(r#"{"message":{"content":"{\"type\":\"invalid\"}"}}"#);
-            assert!(
-                analyze_at(&invalid, "text")
-                    .await
-                    .unwrap_err()
-                    .contains("Invalid document analysis")
+            assert_eq!(
+                analyze_at(&invalid, "text").await.unwrap_err(),
+                "ollama.invalid_analysis"
             );
         });
     }
@@ -327,11 +325,9 @@ mod tests {
             assert_eq!(request["input"], "Rust course certificate");
 
             let empty = respond(r#"{"embeddings":[]}"#);
-            assert!(
-                generate_embedding_at(&empty, "text")
-                    .await
-                    .unwrap_err()
-                    .contains("empty embedding")
+            assert_eq!(
+                generate_embedding_at(&empty, "text").await.unwrap_err(),
+                "ollama.empty_embedding"
             );
             let invalid = respond(r#"{"bad":true}"#);
             assert!(generate_embedding_at(&invalid, "text").await.is_err());

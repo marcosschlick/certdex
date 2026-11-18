@@ -16,7 +16,7 @@ const fileInput = (view) => view.find((node) => node.type === "input" && node.pr
 const registerButton = (view) => view.find((node) => node.type === "button" && node.props.type === "submit");
 const typeSelect = (view) => view.find((node) => node.type === "select" && node.props.name === "type");
 const titleInput = (view) => view.find((node) => node.type === "input" && node.props.name === "title");
-const reading = { text: "Document text", source: "pdf_text", used_ocr: false, has_sufficient_text: true };
+const reading = { text: "Document text", source: "pdf_text", used_ocr: false, has_sufficient_text: true, warnings: [] };
 
 test("registration waits for PDF reading and Ollama analysis and rejects failed reads", async () => {
   const read = deferred();
@@ -81,11 +81,11 @@ test("filtered documents determine the displayed workload", async () => {
   }, true);
   view.find(() => false);
   await new Promise(setImmediate);
-  const total = () => view.find((node) => node.type === "p" && node.props.children?.[0] === "Total workload: ").props.children[1];
-  assert.equal(total(), 8);
+  const total = () => view.find((node) => node.type === "p" && typeof node.props.children === "string" && node.props.children.startsWith("Total workload:")).props.children;
+  assert.equal(total(), "Total workload: 8 hours");
   for (const query of ["rust", "university", "congress", "ada", "author", "research"]) {
     view.find((node) => node.type === "input" && node.props.type === "search").props.onChange({ target: { value: query } });
-    assert.equal(total(), 3);
+    assert.equal(total(), "Total workload: 3 hours");
   }
 });
 
@@ -170,7 +170,7 @@ test("allows manual registration and replacement without text or AI calls", asyn
         if (command === "list_academic_options") return Promise.resolve({ organizations: [], events: [], people: [], tags: [] });
         if (command === "hash_document") return Promise.resolve("hash");
         if (command === "document_hash_exists") return Promise.resolve(false);
-        if (command === "read_selected_document") return Promise.resolve({ ...reading, text, has_sufficient_text: false, warning: "OCR failed and no PDF text was extracted." });
+        if (command === "read_selected_document") return Promise.resolve({ ...reading, text, has_sufficient_text: false, warnings: ["ocr_failed_no_pdf_text"] });
         if (command === "store_document" || command === "update_document") {
           saved = { command, args };
           return Promise.resolve("saved.pdf");

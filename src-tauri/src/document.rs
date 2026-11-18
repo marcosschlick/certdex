@@ -84,7 +84,7 @@ fn document_extension(data: &[u8]) -> Result<&'static str, String> {
     match image::guess_format(data) {
         Ok(image::ImageFormat::Png) => Ok("png"),
         Ok(image::ImageFormat::Jpeg) => Ok("jpg"),
-        _ => Err("The selected file is not a PDF, PNG, or JPG.".into()),
+        _ => Err("document.unsupported_file_type".into()),
     }
 }
 
@@ -164,7 +164,7 @@ pub(crate) async fn list_academic_options(
         sqlx::query_scalar(query)
             .fetch_all(pool)
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|_| "database.error".to_string())
     }
     Ok(AcademicOptions {
         organizations: names(&pool, "SELECT name FROM organizations ORDER BY name").await?,
@@ -180,7 +180,7 @@ pub(crate) async fn list_documents(
 ) -> Result<Vec<DocumentListItem>, String> {
     load_documents(&pool)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|_| "database.error".to_string())
 }
 
 async fn document_file_path(
@@ -193,15 +193,15 @@ async fn document_file_path(
             .bind(id)
             .fetch_optional(pool)
             .await
-            .map_err(|error| error.to_string())?
+            .map_err(|_| "database.error".to_string())?
             .flatten();
-    let path = stored_path.ok_or("File not found for this document.")?;
+    let path = stored_path.ok_or("document.file_missing_in_record")?;
     let directory = documents_dir
         .canonicalize()
-        .map_err(|_| "Documents folder not found.")?;
+        .map_err(|_| "document.documents_dir_not_found")?;
     let path = Path::new(&path)
         .canonicalize()
-        .map_err(|_| "Document file not found.")?;
+        .map_err(|_| "document.file_not_found")?;
     let valid_extension = path.extension().is_some_and(|extension| {
         extension.eq_ignore_ascii_case("pdf")
             || extension.eq_ignore_ascii_case("png")
@@ -209,7 +209,7 @@ async fn document_file_path(
             || extension.eq_ignore_ascii_case("jpeg")
     });
     if !path.starts_with(directory) || !path.is_file() || !valid_extension {
-        return Err("Invalid document file path.".into());
+        return Err("document.invalid_file_path".into());
     }
     Ok(path)
 }
@@ -224,7 +224,7 @@ fn open_file_in_os(path: &Path) -> Result<(), String> {
     std::process::Command::new(program)
         .arg(path)
         .spawn()
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "document.open_failed".to_string())?;
     Ok(())
 }
 
@@ -256,12 +256,12 @@ pub(crate) async fn save_report_pdf(
     data: Vec<u8>,
     filename: String,
 ) -> Result<String, String> {
-    let home = app.path().home_dir().map_err(|error| error.to_string())?;
+    let home = app.path().home_dir().map_err(|_| "app.directory_unavailable".to_string())?;
     let documents_dir = crate::profile::load_documents_dir(&pool, &home).await?;
     let reports_dir = documents_dir.join("reports");
-    fs::create_dir_all(&reports_dir).map_err(|error| error.to_string())?;
+    fs::create_dir_all(&reports_dir).map_err(|_| "report.save_failed".to_string())?;
     let path = reports_dir.join(sanitize_report_filename(&filename));
-    fs::write(&path, data).map_err(|error| error.to_string())?;
+    fs::write(&path, data).map_err(|_| "report.save_failed".to_string())?;
     open_file_in_os(&path)?;
     Ok(path.to_string_lossy().into_owned())
 }
@@ -272,7 +272,7 @@ pub(crate) async fn open_document(
     pool: State<'_, SqlitePool>,
     id: i64,
 ) -> Result<(), String> {
-    let home = app.path().home_dir().map_err(|error| error.to_string())?;
+    let home = app.path().home_dir().map_err(|_| "app.directory_unavailable".to_string())?;
     let documents_dir = crate::profile::load_documents_dir(&pool, &home).await?;
     let path = document_file_path(&pool, &documents_dir, id).await?;
     open_file_in_os(&path)
@@ -284,7 +284,7 @@ pub(crate) async fn reveal_document(
     pool: State<'_, SqlitePool>,
     id: i64,
 ) -> Result<(), String> {
-    let home = app.path().home_dir().map_err(|error| error.to_string())?;
+    let home = app.path().home_dir().map_err(|_| "app.directory_unavailable".to_string())?;
     let documents_dir = crate::profile::load_documents_dir(&pool, &home).await?;
     let path = document_file_path(&pool, &documents_dir, id).await?;
     #[cfg(target_os = "windows")]
@@ -292,7 +292,7 @@ pub(crate) async fn reveal_document(
         std::process::Command::new("explorer")
             .arg(format!("/select,{}", path.display()))
             .spawn()
-            .map_err(|error| error.to_string())?;
+            .map_err(|_| "document.reveal_failed".to_string())?;
     }
     #[cfg(target_os = "macos")]
     {
@@ -300,7 +300,7 @@ pub(crate) async fn reveal_document(
             .arg("-R")
             .arg(&path)
             .spawn()
-            .map_err(|error| error.to_string())?;
+            .map_err(|_| "document.reveal_failed".to_string())?;
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
@@ -308,7 +308,7 @@ pub(crate) async fn reveal_document(
         std::process::Command::new("xdg-open")
             .arg(folder)
             .spawn()
-            .map_err(|error| error.to_string())?;
+            .map_err(|_| "document.reveal_failed".to_string())?;
     }
     Ok(())
 }
@@ -321,7 +321,7 @@ pub(crate) async fn document_hash_exists(
 ) -> Result<bool, String> {
     hash_exists(&pool, &hash, exclude_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|_| "database.error".to_string())
 }
 
 fn store_file(
@@ -335,7 +335,7 @@ fn store_file(
     let extension = document_extension(data)?;
     let (relative, base) = document_location(document_type, year, organization, title)?;
     let directory = documents_dir.join(relative);
-    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    fs::create_dir_all(&directory).map_err(|_| "document.file_save_failed".to_string())?;
     for number in 0u32.. {
         let name = if number == 0 {
             format!("{base}.{extension}")
@@ -349,17 +349,17 @@ fn store_file(
             .open(&path)
         {
             Ok(mut file) => {
-                if let Err(error) = file.write_all(data) {
+                if file.write_all(data).is_err() {
                     drop(file);
-                    return Err(discard_file(&path, error.to_string()));
+                    return Err(discard_file(&path, "document.file_save_failed".into()));
                 }
                 return Ok(path);
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error.to_string()),
+            Err(_) => return Err("document.file_save_failed".into()),
         }
     }
-    Err("Could not create a unique filename.".into())
+    Err("document.unique_filename_failed".into())
 }
 
 fn slugify(value: &str, fallback: &str) -> String {
@@ -403,10 +403,10 @@ fn document_location(
     ]
     .contains(&document_type)
     {
-        return Err("Invalid document type.".into());
+        return Err("document.invalid_type".into());
     }
     if year != "unknown" && (year.len() != 4 || !year.bytes().all(|byte| byte.is_ascii_digit())) {
-        return Err("Invalid year.".into());
+        return Err("document.invalid_year".into());
     }
     let organization = slugify(organization.unwrap_or(""), "unknown");
     let title = slugify(title, "document");
@@ -487,29 +487,27 @@ impl DocumentInput {
     }
 
     fn validate(&self) -> Result<(), String> {
-        for (field, date) in [
-            ("Issue date", &self.issue_date),
-            ("Start date", &self.start_date),
-            ("End date", &self.end_date),
+        for (code, date) in [
+            ("document.invalid_issue_date", &self.issue_date),
+            ("document.invalid_start_date", &self.start_date),
+            ("document.invalid_end_date", &self.end_date),
         ] {
             if let Some(date) = date
                 && !is_valid_date(date)
             {
-                return Err(format!(
-                    "{field} must be a valid date in YYYY-MM-DD format."
-                ));
+                return Err(code.into());
             }
         }
         if self
             .workload_hours
             .is_some_and(|hours| !hours.is_finite() || hours < 0.0)
         {
-            return Err("Workload must be a finite, non-negative number.".into());
+            return Err("document.invalid_workload".into());
         }
         if let (Some(start), Some(end)) = (&self.start_date, &self.end_date)
             && start > end
         {
-            return Err("The start date must not be after the end date.".into());
+            return Err("document.invalid_date_range".into());
         }
         document_location(
             &self.document_type,
@@ -566,22 +564,22 @@ async fn save_associations(
         .bind(id)
         .execute(&mut *connection)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "database.error".to_string())?;
     sqlx::query("DELETE FROM document_people WHERE document_id = ?")
         .bind(id)
         .execute(&mut *connection)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "database.error".to_string())?;
     sqlx::query("DELETE FROM document_tags WHERE document_id = ?")
         .bind(id)
         .execute(&mut *connection)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "database.error".to_string())?;
     for person in &document.people {
         let name = person.name.trim();
         let role = person.role.trim();
         if name.is_empty() || role.is_empty() {
-            return Err("Each person must have a name and role.".into());
+            return Err("document.person_name_and_role_required".into());
         }
         let person_id = named_id(connection, "people", name).await?;
         sqlx::query("INSERT INTO document_people (document_id, person_id, role) VALUES (?, ?, ?)")
@@ -595,9 +593,9 @@ async fn save_associations(
                     .as_database_error()
                     .is_some_and(|error| error.is_unique_violation())
                 {
-                    "A person can only be added once per document.".to_string()
+                    "document.duplicate_person".to_string()
                 } else {
-                    error.to_string()
+                    "database.error".to_string()
                 }
             })?;
     }
@@ -612,7 +610,7 @@ async fn save_associations(
             .bind(tag_id)
             .execute(&mut *connection)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|_| "database.error".to_string())?;
     }
     Ok(())
 }
@@ -629,15 +627,15 @@ async fn register_document(
     let mut transaction = pool
         .begin_with("BEGIN IMMEDIATE")
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "database.error".to_string())?;
     let exists: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM documents WHERE file_hash = ?)")
             .bind(&hash)
             .fetch_one(&mut *transaction)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|_| "database.error".to_string())?;
     if exists {
-        return Err("This file has already been registered.".into());
+        return Err("document.already_registered".into());
     }
     let year = document.year();
     let path = store_file(
@@ -679,7 +677,7 @@ async fn register_document(
                 Err(error) => Err(error),
             }
         }
-        Err(error) => Err(error.to_string()),
+        Err(_) => Err("database.error".into()),
     };
     if let Err(error) = result {
         return Err(discard_file(&path, error));
@@ -702,15 +700,15 @@ async fn update_document_record(
     let mut transaction = pool
         .begin_with("BEGIN IMMEDIATE")
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "database.error".to_string())?;
     let original: StoredDocument = sqlx::query_as(
         "SELECT d.id, d.type, d.title, COALESCE(d.issue_date, d.start_date, d.end_date) AS date, d.file_path, o.name AS organization FROM documents d LEFT JOIN organizations o ON o.id = d.organization_id WHERE d.id = ?",
     )
     .bind(id)
     .fetch_optional(&mut *transaction)
     .await
-    .map_err(|error| error.to_string())?
-    .ok_or("Document not found.")?;
+    .map_err(|_| "database.error".to_string())?
+    .ok_or("document.not_found")?;
     let old_location = document_location(
         &original.r#type,
         document_year(original.date.as_deref()),
@@ -732,7 +730,7 @@ async fn update_document_record(
     } else if relocate {
         match read_managed_file(&[documents_dir], original.file_path.as_deref())? {
             Some((path, bytes)) => (Some(path), Some(bytes)),
-            None => return Err("The managed file is required to reorganize this document.".into()),
+            None => return Err("document.managed_file_required_for_reorganize".into()),
         }
     } else {
         (None, None)
@@ -742,9 +740,9 @@ async fn update_document_record(
         .bind(&document.issue_date).bind(&document.start_date).bind(&document.end_date)
         .bind(document.workload_hours).bind(&document.city).bind(&document.country)
         .bind(&document.validation_code).bind(&document.validation_url).bind(id)
-        .execute(&mut *transaction).await.map_err(|error| error.to_string())?;
+        .execute(&mut *transaction).await.map_err(|_| "database.error".to_string())?;
     if result.rows_affected() == 0 {
-        return Err("Document not found.".into());
+        return Err("document.not_found".into());
     }
     save_associations(&mut transaction, id, document).await?;
     if data.is_none() && !relocate {
@@ -752,11 +750,11 @@ async fn update_document_record(
         return transaction
             .commit()
             .await
-            .map_err(|error| error.to_string());
+            .map_err(|_| "database.error".to_string());
     }
     let file_bytes = data
         .or(previous_bytes.as_deref())
-        .ok_or("File not found for this document.")?;
+        .ok_or("document.file_missing_in_record")?;
     document_extension(file_bytes)?;
     let hash = sha256(file_bytes);
     if data.is_some() {
@@ -767,9 +765,9 @@ async fn update_document_record(
         .bind(id)
         .fetch_one(&mut *transaction)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "database.error".to_string())?;
         if exists {
-            return Err("This file has already been registered.".into());
+            return Err("document.already_registered".into());
         }
     }
     let path = store_file(
@@ -796,8 +794,8 @@ async fn update_document_record(
             .execute(&mut *transaction)
             .await
     };
-    if let Err(error) = result {
-        return Err(discard_file(&path, error.to_string()));
+    if result.is_err() {
+        return Err(discard_file(&path, "database.error".into()));
     }
     if let Err(error) = crate::search::sync_document_fts(&mut transaction, id).await {
         return Err(discard_file(&path, error));
@@ -858,7 +856,7 @@ pub(crate) async fn reorganize_documents(
     )
     .fetch_all(pool)
     .await
-    .map_err(|error| error.to_string())?;
+    .map_err(|_| "database.error".to_string())?;
     let mut all_roots = Vec::with_capacity(allowed_roots.len() + 1);
     all_roots.push(target_dir);
     all_roots.extend_from_slice(allowed_roots);
@@ -892,15 +890,15 @@ pub(crate) async fn reorganize_documents(
         let mut transaction = pool
             .begin_with("BEGIN IMMEDIATE")
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|_| "database.error".to_string())?;
         let update_result = sqlx::query("UPDATE documents SET stored_filename = ?, file_path = ? WHERE id = ?")
             .bind(filename)
             .bind(new_path.to_string_lossy().as_ref())
             .bind(document.id)
             .execute(&mut *transaction)
             .await;
-        if let Err(error) = update_result {
-            return Err(discard_file(&new_path, error.to_string()));
+        if update_result.is_err() {
+            return Err(discard_file(&new_path, "database.error".into()));
         }
         commit_file_change(transaction, &new_path, Some(previous_path.as_path())).await?;
         prune_empty_parents(&previous_path, &all_roots);
@@ -916,48 +914,45 @@ async fn delete_document_record(
     let mut transaction = pool
         .begin_with("BEGIN IMMEDIATE")
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "database.error".to_string())?;
     let stored_path: Option<Option<String>> =
         sqlx::query_scalar("SELECT file_path FROM documents WHERE id = ?")
             .bind(id)
             .fetch_optional(&mut *transaction)
             .await
-            .map_err(|error| error.to_string())?;
-    let stored_path = stored_path.ok_or("Document not found.")?;
+            .map_err(|_| "database.error".to_string())?;
+    let stored_path = stored_path.ok_or("document.not_found")?;
     let previous = resolve_managed_file(allowed_roots, stored_path.as_deref())?;
     sqlx::query("DELETE FROM document_people WHERE document_id = ?")
         .bind(id)
         .execute(&mut *transaction)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "database.error".to_string())?;
     sqlx::query("DELETE FROM document_tags WHERE document_id = ?")
         .bind(id)
         .execute(&mut *transaction)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "database.error".to_string())?;
     sqlx::query("DELETE FROM document_embeddings WHERE document_id = ?")
         .bind(id)
         .execute(&mut *transaction)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "database.error".to_string())?;
     crate::search::delete_document_fts(&mut transaction, id).await?;
     let result = sqlx::query("DELETE FROM documents WHERE id = ?")
         .bind(id)
         .execute(&mut *transaction)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "database.error".to_string())?;
     if result.rows_affected() == 0 {
-        return Err("Document not found.".into());
+        return Err("document.not_found".into());
     }
-    transaction.commit().await.map_err(|error| error.to_string())?;
+    transaction.commit().await.map_err(|_| "database.error".to_string())?;
     if let Some(path) = previous {
         if let Err(error) = fs::remove_file(&path)
             && error.kind() != std::io::ErrorKind::NotFound
         {
-            return Err(format!(
-                "Document record was deleted, but the file could not be removed ({}): {error}",
-                path.display()
-            ));
+            return Err("document.deleted_file_cleanup_failed".into());
         }
         prune_empty_parents(&path, allowed_roots);
     }
@@ -970,11 +965,11 @@ pub(crate) async fn delete_document(
     pool: State<'_, SqlitePool>,
     id: i64,
 ) -> Result<(), String> {
-    let home = app.path().home_dir().map_err(|error| error.to_string())?;
+    let home = app.path().home_dir().map_err(|_| "app.directory_unavailable".to_string())?;
     let data_dir = app
         .path()
         .app_data_dir()
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "app.directory_unavailable".to_string())?;
     let documents_dir = crate::profile::load_documents_dir(&pool, &home).await?;
     let legacy_dir = data_dir.join("documents");
     delete_document_record(&pool, &[&documents_dir, &legacy_dir], id).await
@@ -988,7 +983,7 @@ pub(crate) async fn update_document(
     document: DocumentInput,
     data: Option<Vec<u8>>,
 ) -> Result<(), String> {
-    let home = app.path().home_dir().map_err(|error| error.to_string())?;
+    let home = app.path().home_dir().map_err(|_| "app.directory_unavailable".to_string())?;
     let documents_dir = crate::profile::load_documents_dir(&pool, &home).await?;
     update_document_record(&documents_dir, &pool, id, &document, data.as_deref()).await?;
     crate::search::try_refresh_document_embedding(&pool, id).await;
@@ -1002,7 +997,7 @@ pub(crate) async fn store_document(
     data: Vec<u8>,
     document: DocumentInput,
 ) -> Result<String, String> {
-    let home = app.path().home_dir().map_err(|error| error.to_string())?;
+    let home = app.path().home_dir().map_err(|_| "app.directory_unavailable".to_string())?;
     let documents_dir = crate::profile::load_documents_dir(&pool, &home).await?;
     let path = register_document(&documents_dir, &pool, &data, &document).await?;
     let path_string = path.to_string_lossy().into_owned();
@@ -1081,7 +1076,11 @@ mod tests {
             "2026/01/01",
             "２０２６-01-01",
         ] {
-            for field in ["Issue date", "Start date", "End date"] {
+            for (field, expected_code) in [
+                ("Issue date", "document.invalid_issue_date"),
+                ("Start date", "document.invalid_start_date"),
+                ("End date", "document.invalid_end_date"),
+            ] {
                 let mut document = document_input();
                 let target = match field {
                     "Issue date" => &mut document.issue_date,
@@ -1091,7 +1090,7 @@ mod tests {
                 };
                 *target = Some(date.into());
                 let error = document.validate().unwrap_err();
-                assert!(error.contains(field), "{field}: {date:?}: {error}");
+                assert_eq!(error, expected_code, "{field}: {date:?}: {error}");
             }
         }
         let document = DocumentInput {
@@ -1116,7 +1115,11 @@ mod tests {
             let documents = load_documents(&pool).await.unwrap();
             let id = documents[0].id;
             let original = serde_json::to_value(documents).unwrap();
-            for field in ["issue_date", "start_date", "end_date"] {
+            for (field, expected_code) in [
+                ("issue_date", "document.invalid_issue_date"),
+                ("start_date", "document.invalid_start_date"),
+                ("end_date", "document.invalid_end_date"),
+            ] {
                 let mut document = document_input();
                 document.title = Some("Rejected".into());
                 let target = match field {
@@ -1126,18 +1129,18 @@ mod tests {
                     _ => unreachable!(),
                 };
                 *target = Some("2026-99-99".into());
-                assert!(
+                assert_eq!(
                     register_document(&rejected_root, &pool, REPLACEMENT_PDF, &document)
                         .await
-                        .unwrap_err()
-                        .contains("valid date")
+                        .unwrap_err(),
+                    expected_code
                 );
                 for data in [None, Some(REPLACEMENT_PDF)] {
-                    assert!(
+                    assert_eq!(
                         update_document_record(&root, &pool, id, &document, data)
                             .await
-                            .unwrap_err()
-                            .contains("valid date")
+                            .unwrap_err(),
+                        expected_code
                     );
                 }
             }

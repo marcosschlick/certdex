@@ -143,20 +143,27 @@ test("builds report data from filtered documents and calculates matching total w
   assert.equal(report.totalHours, 35);
 });
 
-test("generates a valid PDF byte stream including multi-page documents", () => {
+test("generates a valid PDF byte stream including multi-page documents across locales", () => {
   const manyDocuments = Array.from({ length: 45 }, (_, index) => ({
     title: `Certificate ${index + 1} with a descriptive title`,
     organization: "Federal Institute of Sul-rio-grandense",
     issue_date: "2025-01-15",
     start_date: null,
     end_date: null,
-    workload_hours: 4,
+    workload_hours: 4.5,
   }));
-  const report = buildReportData(sampleProfile, manyDocuments, { search: "", type: "", year: "", tag: "" });
-  const bytes = generateReportPdf(report, "2026-11-18");
-
-  assert.ok(bytes instanceof Uint8Array);
-  assert.ok(bytes.length > 500);
-  const header = new TextDecoder().decode(bytes.slice(0, 5));
-  assert.equal(header, "%PDF-");
+  const report = buildReportData(sampleProfile, manyDocuments, { search: "", type: "certificate", year: "", tag: "" });
+  for (const [locale, expectedHeader, expectedHours] of [
+    ["en", "Certdex - Certificate & Document Report", "202.5 hours"],
+    ["pt-BR", "Certdex - Relatório de Certificados e Documentos", "202,5 horas"],
+    ["es-UY", "Certdex - Informe de Certificados y Documentos", "202,5 horas"],
+  ]) {
+    const bytes = generateReportPdf(report, "2026-11-18", locale);
+    assert.ok(bytes instanceof Uint8Array);
+    assert.ok(bytes.length > 500);
+    const decoded = new TextDecoder("latin1").decode(bytes);
+    assert.equal(decoded.slice(0, 5), "%PDF-");
+    assert.ok(decoded.includes(expectedHeader));
+    assert.ok(decoded.includes(expectedHours));
+  }
 });

@@ -2,6 +2,8 @@
 
 Certdex is an offline desktop app for cataloging PDF and image certificates. It extracts text from each file, runs a local LLM through Ollama to fill in metadata, and stores everything in a local SQLite database.
 
+The interface, document types, chat search replies, and PDF reports support three languages: English (`en`), Brazilian Portuguese (`pt-BR`), and Uruguayan Spanish (`es-UY`). Certdex defaults to your system language (falling back to English) and lets you switch languages anytime in Profile.
+
 The name combines "cert" (certificate) and "dex" (from Pokedex).
 
 ## Tech stack

@@ -1,4 +1,11 @@
 import { jsPDF } from "jspdf";
+import {
+  formatDate,
+  formatNumber,
+  translate,
+  translateDocumentType,
+  type Locale,
+} from "./i18n.ts";
 
 export type ReportProfile = {
   name: string;
@@ -72,17 +79,21 @@ export function buildReportData(
   };
 }
 
-function formatActiveFilters(filters: ReportFilters): string {
+function formatActiveFilters(filters: ReportFilters, locale: Locale): string {
   const parts = [
-    filters.search.trim() ? `Search: ${filters.search.trim()}` : "",
-    filters.type ? `Type: ${filters.type}` : "",
-    filters.year ? `Year: ${filters.year}` : "",
-    filters.tag ? `Tag: ${filters.tag}` : "",
+    filters.search.trim() ? translate(locale, "report.filterSearch", { value: filters.search.trim() }) : "",
+    filters.type ? translate(locale, "report.filterType", { value: translateDocumentType(locale, filters.type) }) : "",
+    filters.year ? translate(locale, "report.filterYear", { value: filters.year }) : "",
+    filters.tag ? translate(locale, "report.filterTag", { value: filters.tag }) : "",
   ].filter(Boolean);
-  return parts.length > 0 ? parts.join(" | ") : "None (all documents)";
+  return parts.length > 0 ? parts.join(" | ") : translate(locale, "report.filterNone");
 }
 
-export function generateReportPdf(report: ReportData, generatedDate = new Date().toISOString().slice(0, 10)): Uint8Array {
+export function generateReportPdf(
+  report: ReportData,
+  generatedDate = new Date().toISOString().slice(0, 10),
+  locale: Locale = "en",
+): Uint8Array {
   const doc = new jsPDF({ unit: "mm", format: "a4" });
   const margin = 15;
   const pageWidth = doc.internal.pageSize.getWidth();
@@ -106,21 +117,30 @@ export function generateReportPdf(report: ReportData, generatedDate = new Date()
     y += lines.length * lineHeight + gap;
   };
 
-  writeWrapped("Certdex - Certificate & Document Report", 16, "bold", 3);
-  writeWrapped(`Generated on ${generatedDate}`, 9, "normal", 6);
+  writeWrapped(translate(locale, "report.title"), 16, "bold", 3);
+  writeWrapped(
+    translate(locale, "report.generatedOn", { date: formatDate(locale, generatedDate, generatedDate) }),
+    9,
+    "normal",
+    6,
+  );
 
-  writeWrapped("Profile", 12, "bold", 2);
+  writeWrapped(translate(locale, "report.profileHeading"), 12, "bold", 2);
   const location = [report.profile.city, report.profile.state, report.profile.country].filter(Boolean).join(", ");
   const profileLines = [
-    `Name: ${report.profile.name}`,
-    `Email: ${report.profile.email} | Phone: ${report.profile.phone}`,
-    location ? `Location: ${location}` : "",
-    report.profile.github ? `GitHub: ${report.profile.github}` : "",
-    report.profile.linkedin ? `LinkedIn: ${report.profile.linkedin}` : "",
-    report.profile.orcid ? `ORCID: ${report.profile.orcid}` : "",
-    report.profile.website ? `Website: ${report.profile.website}` : "",
-    report.profile.professional_summary ? `Professional summary: ${report.profile.professional_summary}` : "",
-    report.profile.academic_summary ? `Academic summary: ${report.profile.academic_summary}` : "",
+    translate(locale, "report.name", { value: report.profile.name }),
+    translate(locale, "report.contact", { email: report.profile.email, phone: report.profile.phone }),
+    location ? translate(locale, "report.location", { value: location }) : "",
+    report.profile.github ? translate(locale, "report.github", { value: report.profile.github }) : "",
+    report.profile.linkedin ? translate(locale, "report.linkedin", { value: report.profile.linkedin }) : "",
+    report.profile.orcid ? translate(locale, "report.orcid", { value: report.profile.orcid }) : "",
+    report.profile.website ? translate(locale, "report.website", { value: report.profile.website }) : "",
+    report.profile.professional_summary
+      ? translate(locale, "report.professionalSummary", { value: report.profile.professional_summary })
+      : "",
+    report.profile.academic_summary
+      ? translate(locale, "report.academicSummary", { value: report.profile.academic_summary })
+      : "",
   ].filter(Boolean);
 
   for (const line of profileLines) {
@@ -128,8 +148,13 @@ export function generateReportPdf(report: ReportData, generatedDate = new Date()
   }
   y += 3;
 
-  writeWrapped(`Active filters: ${formatActiveFilters(report.filters)}`, 9, "normal", 6);
-  writeWrapped("Documents", 12, "bold", 3);
+  writeWrapped(
+    translate(locale, "report.activeFilters", { value: formatActiveFilters(report.filters, locale) }),
+    9,
+    "normal",
+    6,
+  );
+  writeWrapped(translate(locale, "report.documentsHeading"), 12, "bold", 3);
 
   const columns = {
     title: { x: margin, width: 72 },
@@ -142,10 +167,10 @@ export function generateReportPdf(report: ReportData, generatedDate = new Date()
     ensureSpace(10);
     doc.setFont("helvetica", "bold");
     doc.setFontSize(9);
-    doc.text("Title", columns.title.x, y);
-    doc.text("Institution", columns.institution.x, y);
-    doc.text("Date", columns.date.x, y);
-    doc.text("Hours", columns.hours.x + columns.hours.width, y, { align: "right" });
+    doc.text(translate(locale, "report.columnTitle"), columns.title.x, y);
+    doc.text(translate(locale, "report.columnInstitution"), columns.institution.x, y);
+    doc.text(translate(locale, "report.columnDate"), columns.date.x, y);
+    doc.text(translate(locale, "report.columnHours"), columns.hours.x + columns.hours.width, y, { align: "right" });
     y += 2;
     doc.line(margin, y, pageWidth - margin, y);
     y += 5;
@@ -167,18 +192,28 @@ export function generateReportPdf(report: ReportData, generatedDate = new Date()
       doc.setFont("helvetica", "normal");
       doc.setFontSize(9);
     }
+    const formattedDate = item.date === "-" ? "-" : formatDate(locale, item.date, "-");
+    const formattedHours = item.hours === null ? "-" : formatNumber(locale, item.hours);
     doc.text(titleLines, columns.title.x, y);
     doc.text(institutionLines, columns.institution.x, y);
-    doc.text(item.date, columns.date.x, y);
-    doc.text(item.hours === null ? "-" : String(item.hours), columns.hours.x + columns.hours.width, y, { align: "right" });
+    doc.text(formattedDate, columns.date.x, y);
+    doc.text(formattedHours, columns.hours.x + columns.hours.width, y, { align: "right" });
     y += rowHeight;
   }
 
   ensureSpace(10);
   doc.line(margin, y, pageWidth - margin, y);
   y += 6;
-  const noun = report.documents.length === 1 ? "document" : "documents";
-  writeWrapped(`Total workload: ${report.totalHours} hours (${report.documents.length} ${noun})`, 11, "bold", 0);
+  const totalKey = report.documents.length === 1 ? "report.totalWorkloadOne" : "report.totalWorkloadMany";
+  writeWrapped(
+    translate(locale, totalKey, {
+      hours: formatNumber(locale, report.totalHours),
+      count: formatNumber(locale, report.documents.length),
+    }),
+    11,
+    "bold",
+    0,
+  );
 
   return new Uint8Array(doc.output("arraybuffer"));
 }

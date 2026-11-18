@@ -17,7 +17,7 @@ test("chat searches documents, shows real file path, and triggers open and revea
     calls.push([command, args]);
     if (command === "search_documents_chat") {
       return {
-        reply: 'Found 1 document matching "certificacao":',
+        query: "certificacao",
         used_embeddings: true,
         results: [
           {
@@ -66,13 +66,13 @@ test("chat searches documents, shows real file path, and triggers open and revea
   ]);
 });
 
-test("chat renders fixed empty reply and error feedback", async () => {
+test("chat renders localized empty reply and error feedback", async () => {
   let fail = false;
   const invoke = async (command) => {
     if (command === "search_documents_chat") {
-      if (fail) throw "Search failed.";
+      if (fail) throw "database.error";
       return {
-        reply: 'No documents found matching "missing".',
+        query: "missing",
         used_embeddings: false,
         results: [],
       };
@@ -80,13 +80,13 @@ test("chat renders fixed empty reply and error feedback", async () => {
     return null;
   };
 
-  const chat = createComponent("Chat", invoke);
+  const chat = createComponent("Chat", invoke, false, {}, { navigator: { languages: ["es-UY"] } });
   chat.find((node) => node.type === "input").props.onChange({ target: { value: "missing" } });
   await chat.find((node) => node.type === "form").props.onSubmit({ preventDefault() {} });
   await flush();
 
   const reply = chat.find((node) => node.props?.className === "chat-reply");
-  assert.equal(collectText(reply), 'No documents found matching "missing".');
+  assert.equal(collectText(reply), 'No se encontraron documentos para "missing".');
   assert.equal(chat.find((node) => node.props?.className === "chat-result-card"), undefined);
 
   fail = true;
@@ -95,14 +95,14 @@ test("chat renders fixed empty reply and error feedback", async () => {
   await flush();
 
   const alert = chat.find((node) => node.props?.role === "alert");
-  assert.equal(collectText(alert), "Search failed.");
+  assert.equal(collectText(alert), "Ocurrió un error en la base de datos. Intentá de nuevo.");
 });
 
-test("chat shows FTS5 mode indicator and action errors", async () => {
+test("chat shows FTS5 mode indicator, translated document type, and action errors", async () => {
   const invoke = async (command) => {
     if (command === "search_documents_chat") {
       return {
-        reply: 'Found 1 document matching "rust":',
+        query: "rust",
         used_embeddings: false,
         results: [
           {
@@ -118,19 +118,21 @@ test("chat shows FTS5 mode indicator and action errors", async () => {
         ],
       };
     }
-    if (command === "open_document") throw "File unavailable.";
+    if (command === "open_document") throw "document.file_not_found";
     return null;
   };
 
-  const chat = createComponent("Chat", invoke);
+  const chat = createComponent("Chat", invoke, false, {}, { navigator: { languages: ["pt-BR"] } });
   chat.find((node) => node.type === "input").props.onChange({ target: { value: "rust" } });
   await chat.find((node) => node.type === "form").props.onSubmit({ preventDefault() {} });
   await flush();
 
   const mode = chat.find((node) => node.props?.className === "chat-mode");
-  assert.equal(collectText(mode), "Keyword search (FTS5)");
+  assert.equal(collectText(mode), "Busca por palavras-chave (FTS5)");
+  const docType = chat.find((node) => node.props?.className === "chat-result-type");
+  assert.equal(collectText(docType), "Curso");
 
   await chat.find((node) => node.props?.className === "chat-action-open").props.onClick();
   const alert = chat.find((node) => node.props?.role === "alert");
-  assert.equal(collectText(alert), "File unavailable.");
+  assert.equal(collectText(alert), "Arquivo do documento não encontrado.");
 });

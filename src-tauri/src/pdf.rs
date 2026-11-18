@@ -15,7 +15,7 @@ pub struct ExtractedText {
     pub has_sufficient_text: bool,
     pub source: &'static str,
     pub used_ocr: bool,
-    pub warning: Option<String>,
+    pub warnings: Vec<String>,
     pub regex_analysis: Option<DocumentAnalysis>,
 }
 
@@ -23,7 +23,7 @@ fn build_extracted_text(
     text: String,
     source: &'static str,
     used_ocr: bool,
-    warning: Option<String>,
+    warnings: Vec<String>,
 ) -> ExtractedText {
     let regex_analysis = (!text.trim().is_empty())
         .then(|| combine_analysis(extract_with_regex(&text), LlmDocumentAnalysis::default()));
@@ -32,7 +32,7 @@ fn build_extracted_text(
         text,
         source,
         used_ocr,
-        warning,
+        warnings,
         regex_analysis,
     }
 }
@@ -58,21 +58,18 @@ fn extract_with_ocr(
                 (ocr_text, true)
             }
             Ok(_) => {
-                warnings
-                    .push("OCR produced no text. Showing the text extracted from the PDF.".into());
+                warnings.push("ocr_empty_using_pdf_text".into());
                 (text, false)
             }
-            Err(error) if !text.trim().is_empty() => {
-                warnings.push(format!(
-                    "OCR failed: {error}. Showing the text extracted from the PDF."
-                ));
+            Err(_) if !text.trim().is_empty() => {
+                warnings.push("ocr_failed_using_pdf_text".into());
                 (text, false)
             }
-            Err(error) => {
-                warnings.push(format!("OCR failed and no PDF text was extracted: {error}"));
+            Err(_) => {
                 if !pdf_recognized {
-                    return Err(warnings.join(" "));
+                    return Err("document.ocr_and_pdf_text_failed".into());
                 }
+                warnings.push("ocr_failed_no_pdf_text".into());
                 (String::new(), false)
             }
         }
@@ -81,14 +78,14 @@ fn extract_with_ocr(
         text,
         if used_ocr { "ocr" } else { "pdf_text" },
         used_ocr,
-        (!warnings.is_empty()).then(|| warnings.join(" ")),
+        warnings,
     ))
 }
 
 fn extract_ocr(path: &Path) -> Result<String, String> {
     let path = path
         .canonicalize()
-        .map_err(|error| format!("Could not access PDF: {error}"))?;
+        .map_err(|_| "document.pdf_read_failed".to_string())?;
     let directory = create_temp_directory()?;
     let result = run_ocr(
         &path,
@@ -98,14 +95,7 @@ fn extract_ocr(path: &Path) -> Result<String, String> {
     );
     match fs::remove_dir_all(&directory) {
         Ok(()) => result,
-        Err(error) => Err(format!(
-            "Could not remove OCR temporary directory {}: {error}{}",
-            directory.display(),
-            result
-                .err()
-                .map(|original| format!("; {original}"))
-                .unwrap_or_default()
-        )),
+        Err(_) => Err(result.err().unwrap_or_else(|| "document.temp_dir_failed".into())),
     }
 }
 
@@ -117,7 +107,7 @@ fn create_temp_directory() -> Result<PathBuf, String> {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|error| error.to_string())?
+                .map_err(|_| "document.temp_dir_failed".to_string())?
                 .as_nanos(),
             NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed)
         ));
@@ -130,7 +120,7 @@ fn create_temp_directory() -> Result<PathBuf, String> {
         match builder.create(&candidate) {
             Ok(()) => return Ok(candidate),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(format!("Could not create OCR temporary directory: {error}")),
+            Err(_) => return Err("document.temp_dir_failed".into()),
         }
     }
 }
@@ -145,7 +135,7 @@ async fn validate_pdf(data: &[u8]) -> Result<(), String> {
         with_pdf_file(&data, |path| extract_text(path).map(|_| ()))
     })
     .await
-    .map_err(|error| format!("PDF validation failed: {error}"))?
+    .map_err(|_| "document.pdf_read_failed".to_string())?
 }
 
 fn with_pdf_file<T>(
@@ -153,23 +143,16 @@ fn with_pdf_file<T>(
     operation: impl FnOnce(&Path) -> Result<T, String>,
 ) -> Result<T, String> {
     if !data.starts_with(b"%PDF-") {
-        return Err("The selected file is not a PDF.".into());
+        return Err("document.not_a_pdf".into());
     }
     let directory = create_temp_directory()?;
     let path = directory.join("input.pdf");
     let result = fs::write(&path, data)
-        .map_err(|error| format!("Could not prepare PDF for reading: {error}"))
+        .map_err(|_| "document.pdf_read_failed".to_string())
         .and_then(|()| operation(&path));
     match fs::remove_dir_all(&directory) {
         Ok(()) => result,
-        Err(error) => Err(format!(
-            "Could not remove temporary PDF directory {}: {error}{}",
-            directory.display(),
-            result
-                .err()
-                .map(|original| format!("; {original}"))
-                .unwrap_or_default()
-        )),
+        Err(_) => Err(result.err().unwrap_or_else(|| "document.temp_dir_failed".into())),
     }
 }
 
@@ -182,21 +165,21 @@ pub(crate) async fn validate_document_file(data: &[u8]) -> Result<(), String> {
         decode_supported_image(&data).map(|_| ())
     })
     .await
-    .map_err(|error| format!("Image validation failed: {error}"))?
+    .map_err(|_| "document.invalid_image".to_string())?
 }
 
 fn decode_supported_image(data: &[u8]) -> Result<DynamicImage, String> {
     let format = image::guess_format(data)
-        .map_err(|_| "The selected file is not a supported PDF, PNG, or JPG.".to_string())?;
+        .map_err(|_| "document.unsupported_file_type".to_string())?;
     if !matches!(format, ImageFormat::Png | ImageFormat::Jpeg) {
-        return Err("The selected file is not a supported PDF, PNG, or JPG.".into());
+        return Err("document.unsupported_file_type".into());
     }
     let mut decoder = ImageReader::with_format(Cursor::new(data), format)
         .into_decoder()
-        .map_err(|error| format!("Could not read image: {error}"))?;
+        .map_err(|_| "document.invalid_image".to_string())?;
     let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
     let mut image = DynamicImage::from_decoder(decoder)
-        .map_err(|error| format!("Could not decode image: {error}"))?;
+        .map_err(|_| "document.invalid_image".to_string())?;
     image.apply_orientation(orientation);
     Ok(image)
 }
@@ -207,25 +190,18 @@ fn read_image(data: &[u8], tesseract: &Path) -> Result<ExtractedText, String> {
     let path = directory.join("input.png");
     let ocr_result = image
         .save_with_format(&path, ImageFormat::Png)
-        .map_err(|error| format!("Could not prepare image for OCR: {error}"))
-        .and_then(|()| run_tesseract_ocr(&path, tesseract, "image"));
-    if let Err(error) = fs::remove_dir_all(&directory) {
-        return Err(format!(
-            "Could not remove OCR temporary directory {}: {error}{}",
-            directory.display(),
-            ocr_result
-                .err()
-                .map(|original| format!("; {original}"))
-                .unwrap_or_default()
-        ));
+        .map_err(|_| "document.ocr_prepare_failed".to_string())
+        .and_then(|()| run_tesseract_ocr(&path, tesseract));
+    if fs::remove_dir_all(&directory).is_err() {
+        return Err(ocr_result.err().unwrap_or_else(|| "document.temp_dir_failed".into()));
     }
     Ok(match ocr_result {
-        Ok(text) => build_extracted_text(text, "ocr", true, None),
-        Err(error) => build_extracted_text(
+        Ok(text) => build_extracted_text(text, "ocr", true, Vec::new()),
+        Err(_) => build_extracted_text(
             String::new(),
             "ocr",
             false,
-            Some(format!("OCR failed: {error}")),
+            vec!["ocr_failed".into()],
         ),
     })
 }
@@ -242,7 +218,7 @@ fn read_document(data: &[u8]) -> Result<ExtractedText, String> {
 pub(crate) async fn read_selected_document(data: Vec<u8>) -> Result<ExtractedText, String> {
     tauri::async_runtime::spawn_blocking(move || read_document(&data))
         .await
-        .map_err(|error| format!("Document reading failed: {error}"))?
+        .map_err(|_| "document.read_failed".to_string())?
 }
 
 fn run_ocr(
@@ -256,18 +232,15 @@ fn run_ocr(
         .arg(path)
         .arg(directory.join("page"))
         .output()
-        .map_err(|error| format!("Could not run pdftoppm: {error}"))?;
+        .map_err(|_| "document.pdf_render_failed".to_string())?;
     if !output.status.success() {
-        return Err(format!(
-            "PDF page rendering failed (pdftoppm): {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+        return Err("document.pdf_render_failed".into());
     }
     let mut pages: Vec<(u32, PathBuf)> = Vec::new();
     for entry in
-        fs::read_dir(directory).map_err(|error| format!("Could not read OCR pages: {error}"))?
+        fs::read_dir(directory).map_err(|_| "document.ocr_pages_read_failed".to_string())?
     {
-        let entry = entry.map_err(|error| format!("Could not read OCR page: {error}"))?;
+        let entry = entry.map_err(|_| "document.ocr_pages_read_failed".to_string())?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
         if let Some(number) = name
@@ -280,11 +253,11 @@ fn run_ocr(
     }
     pages.sort_unstable_by_key(|(number, _)| *number);
     if pages.is_empty() {
-        return Err("PDF page rendering produced no images.".into());
+        return Err("document.pdf_render_failed".into());
     }
     let mut text = String::new();
-    for (number, page) in pages {
-        let page_text = run_tesseract_ocr(&page, tesseract, &format!("page {number}"))?;
+    for (_, page) in pages {
+        let page_text = run_tesseract_ocr(&page, tesseract)?;
         if !text.is_empty() {
             text.push('\n');
         }
@@ -293,7 +266,7 @@ fn run_ocr(
     Ok(text)
 }
 
-fn run_tesseract_ocr(image: &Path, tesseract: &Path, label: &str) -> Result<String, String> {
+fn run_tesseract_ocr(image: &Path, tesseract: &Path) -> Result<String, String> {
     let output = Command::new(tesseract)
         .arg(image)
         .arg("stdout")
@@ -302,15 +275,11 @@ fn run_tesseract_ocr(image: &Path, tesseract: &Path, label: &str) -> Result<Stri
         .arg("--psm")
         .arg("1")
         .output()
-        .map_err(|error| format!("Could not run tesseract for {label}: {error}"))?;
+        .map_err(|_| "document.ocr_failed".to_string())?;
     if !output.status.success() {
-        return Err(format!(
-            "OCR failed on {label} (tesseract): {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+        return Err("document.ocr_failed".into());
     }
-    String::from_utf8(output.stdout)
-        .map_err(|error| format!("OCR returned invalid UTF-8 on {label}: {error}"))
+    String::from_utf8(output.stdout).map_err(|_| "document.ocr_failed".to_string())
 }
 
 fn has_sufficient_text(text: &str) -> bool {
@@ -332,22 +301,17 @@ pub fn extract_text(path: &Path) -> Result<String, String> {
 fn extract_pdf_text(path: &Path, program: &Path) -> Result<(String, Option<String>), String> {
     let path = path
         .canonicalize()
-        .map_err(|error| format!("Could not access PDF: {error}"))?;
+        .map_err(|_| "document.pdf_read_failed".to_string())?;
     let output = Command::new(program)
         .arg("-enc")
         .arg("UTF-8")
         .arg(&path)
         .arg("-")
         .output()
-        .map_err(|error| format!("Could not run pdftotext: {error}"))?;
+        .map_err(|_| "document.pdf_text_extraction_failed".to_string())?;
     let text = String::from_utf8(output.stdout)
-        .map_err(|error| format!("PDF text extraction returned invalid UTF-8: {error}"))?;
-    let warning = (!output.status.success()).then(|| {
-        format!(
-            "PDF text extraction failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )
-    });
+        .map_err(|_| "document.pdf_text_extraction_failed".to_string())?;
+    let warning = (!output.status.success()).then(|| "pdf_text_extraction_failed".to_string());
     Ok((text, warning))
 }
 
@@ -380,32 +344,41 @@ mod tests {
     #[test]
     fn recovers_from_pdf_text_failures_and_preserves_valid_partial_text() {
         let recovered =
-            extract_with_ocr(String::new(), Some("pdftotext unavailable".into()), || {
+            extract_with_ocr(String::new(), Some("pdf_text_extraction_failed".into()), || {
                 Ok("Recognized text".into())
             })
             .unwrap();
         assert_eq!(recovered.source, "ocr");
         assert!(recovered.used_ocr);
         assert_eq!(recovered.text, "Recognized text");
-        assert!(recovered.warning.unwrap().contains("pdftotext unavailable"));
+        assert_eq!(recovered.warnings, vec!["pdf_text_extraction_failed"]);
         let partial = "Valid partial text that is already sufficient";
-        for ocr in [Err("OCR unavailable".into()), Ok(String::new())] {
-            let result =
-                extract_with_ocr(partial.into(), Some("pdftotext failed".into()), || ocr).unwrap();
+        for (ocr, expected_warning) in [
+            (Err("document.ocr_failed".into()), "ocr_failed_using_pdf_text"),
+            (Ok(String::new()), "ocr_empty_using_pdf_text"),
+        ] {
+            let result = extract_with_ocr(
+                partial.into(),
+                Some("pdf_text_extraction_failed".into()),
+                || ocr,
+            )
+            .unwrap();
             assert_eq!(result.text, partial);
             assert_eq!(result.source, "pdf_text");
             assert!(!result.used_ocr);
-            let warning = result.warning.unwrap();
-            assert!(warning.contains("pdftotext failed"));
-            assert!(warning.contains("OCR"));
+            assert_eq!(
+                result.warnings,
+                vec!["pdf_text_extraction_failed", expected_warning]
+            );
         }
-        let error = extract_with_ocr(String::new(), Some("pdftotext failed".into()), || {
-            Err("OCR failed".into())
-        })
+        let error = extract_with_ocr(
+            String::new(),
+            Some("pdf_text_extraction_failed".into()),
+            || Err("document.ocr_failed".into()),
+        )
         .err()
         .unwrap();
-        assert!(error.contains("pdftotext failed"));
-        assert!(error.contains("OCR failed"));
+        assert_eq!(error, "document.ocr_and_pdf_text_failed");
     }
 
     #[cfg(unix)]
@@ -424,8 +397,8 @@ mod tests {
         fs::write(&input, b"%PDF-test").unwrap();
         let (text, warning) = extract_pdf_text(&input, &program).unwrap();
         assert_eq!(text, "Valid partial text");
-        assert!(warning.as_deref().unwrap().contains("extraction failed"));
-        let result = extract_with_ocr(text, warning, || Err("OCR unavailable".into())).unwrap();
+        assert_eq!(warning.as_deref(), Some("pdf_text_extraction_failed"));
+        let result = extract_with_ocr(text, warning, || Err("document.ocr_failed".into())).unwrap();
         assert_eq!(result.text, "Valid partial text");
         fs::remove_dir_all(root).unwrap();
     }
@@ -466,15 +439,13 @@ mod tests {
     #[test]
     fn reports_errors_for_missing_or_invalid_files() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        assert!(
-            extract_text(&root.join("nonexistent.pdf"))
-                .unwrap_err()
-                .contains("Could not access PDF")
+        assert_eq!(
+            extract_text(&root.join("nonexistent.pdf")).unwrap_err(),
+            "document.pdf_read_failed"
         );
-        assert!(
-            extract_text(&root.join("Cargo.toml"))
-                .unwrap_err()
-                .contains("PDF text extraction failed")
+        assert_eq!(
+            extract_text(&root.join("Cargo.toml")).unwrap_err(),
+            "pdf_text_extraction_failed"
         );
     }
 
@@ -490,31 +461,29 @@ mod tests {
     #[test]
     fn preserves_pdf_text_when_ocr_fails_or_returns_no_text() {
         let result = extract_with_ocr("Short text".into(), None, || {
-            Err("tesseract unavailable".into())
+            Err("document.ocr_failed".into())
         })
         .unwrap();
         assert_eq!(result.text, "Short text");
         assert_eq!(result.source, "pdf_text");
         assert!(!result.used_ocr);
         assert!(!result.has_sufficient_text);
-        assert!(result.warning.unwrap().contains("tesseract unavailable"));
+        assert_eq!(result.warnings, vec!["ocr_failed_using_pdf_text"]);
 
         let result = extract_with_ocr("Short text".into(), None, || Ok(" \n".into())).unwrap();
         assert_eq!(result.text, "Short text");
-        assert!(result.warning.unwrap().contains("OCR produced no text"));
+        assert_eq!(result.warnings, vec!["ocr_empty_using_pdf_text"]);
     }
 
     #[test]
     fn allows_empty_text_for_recognized_pdfs_and_preserves_successful_extraction() {
         let result =
-            extract_with_ocr(" \n".into(), None, || Err("tesseract unavailable".into())).unwrap();
+            extract_with_ocr(" \n".into(), None, || Err("document.ocr_failed".into())).unwrap();
         assert!(result.text.is_empty());
         assert!(!result.has_sufficient_text);
         assert!(!result.used_ocr);
         assert_eq!(result.source, "pdf_text");
-        let warning = result.warning.unwrap();
-        assert!(warning.contains("no PDF text was extracted"));
-        assert!(warning.contains("tesseract unavailable"));
+        assert_eq!(result.warnings, vec!["ocr_failed_no_pdf_text"]);
 
         let result = extract_with_ocr("Short text".into(), None, || {
             Ok("Recognized document text".into())
@@ -524,14 +493,14 @@ mod tests {
         assert_eq!(result.source, "ocr");
         assert!(result.used_ocr);
         assert!(result.has_sufficient_text);
-        assert!(result.warning.is_none());
+        assert!(result.warnings.is_empty());
 
         let result = extract_with_ocr("This text is already sufficient".into(), None, || {
             panic!("OCR should not run")
         })
         .unwrap();
         assert_eq!(result.source, "pdf_text");
-        assert!(result.warning.is_none());
+        assert!(result.warnings.is_empty());
     }
 
     #[cfg(unix)]
@@ -567,7 +536,7 @@ mod tests {
             &tesseract,
         )
         .unwrap_err();
-        assert!(error.contains("pdftoppm"));
+        assert_eq!(error, "document.pdf_render_failed");
         let error = run_ocr(
             Path::new("input.pdf"),
             &root,
@@ -575,7 +544,7 @@ mod tests {
             Path::new("/bin/false"),
         )
         .unwrap_err();
-        assert!(error.contains("tesseract"));
+        assert_eq!(error, "document.ocr_failed");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -649,7 +618,7 @@ mod tests {
         assert!(extracted.used_ocr);
         assert!(extracted.has_sufficient_text);
         assert_eq!(extracted.text, "Recognized certificate text");
-        assert!(extracted.warning.is_none());
+        assert!(extracted.warnings.is_empty());
 
         let failed = read_image(&jpeg, Path::new("/bin/false")).unwrap();
         assert_eq!(failed.source, "ocr");
@@ -657,7 +626,7 @@ mod tests {
         assert!(!failed.has_sufficient_text);
         assert!(failed.text.is_empty());
         assert!(failed.regex_analysis.is_none());
-        assert!(failed.warning.unwrap().contains("OCR failed"));
+        assert_eq!(failed.warnings, vec!["ocr_failed"]);
 
         fs::remove_dir_all(root).unwrap();
     }

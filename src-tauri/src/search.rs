@@ -22,7 +22,7 @@ pub(crate) struct ChatDocumentResult {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub(crate) struct ChatSearchResponse {
-    pub(crate) reply: String,
+    pub(crate) query: String,
     pub(crate) results: Vec<ChatDocumentResult>,
     pub(crate) used_embeddings: bool,
 }
@@ -113,7 +113,7 @@ async fn load_index_fields(
     .bind(document_id)
     .fetch_optional(&mut *connection)
     .await
-    .map_err(|error| error.to_string())?;
+    .map_err(|_| "database.error".to_string())?;
     let Some(row) = row else {
         return Ok(None);
     };
@@ -123,7 +123,7 @@ async fn load_index_fields(
     .bind(document_id)
     .fetch_all(&mut *connection)
     .await
-    .map_err(|error| error.to_string())?;
+    .map_err(|_| "database.error".to_string())?;
     let people = people_rows
         .into_iter()
         .map(|(name, role)| format!("{name} {role}"))
@@ -135,7 +135,7 @@ async fn load_index_fields(
     .bind(document_id)
     .fetch_all(&mut *connection)
     .await
-    .map_err(|error| error.to_string())?;
+    .map_err(|_| "database.error".to_string())?;
     let tags = tag_rows.join(" ");
     Ok(Some((row, people, tags)))
 }
@@ -167,7 +167,7 @@ pub(crate) async fn sync_document_fts(
     .bind(row.extracted_text.unwrap_or_default())
     .execute(&mut *connection)
     .await
-    .map_err(|error| error.to_string())?;
+    .map_err(|_| "database.error".to_string())?;
     Ok(())
 }
 
@@ -179,7 +179,7 @@ pub(crate) async fn delete_document_fts(
         .bind(document_id)
         .execute(&mut *connection)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "database.error".to_string())?;
     Ok(())
 }
 
@@ -187,7 +187,7 @@ pub(crate) async fn build_document_search_text(
     pool: &SqlitePool,
     document_id: i64,
 ) -> Result<Option<String>, String> {
-    let mut connection = pool.acquire().await.map_err(|error| error.to_string())?;
+    let mut connection = pool.acquire().await.map_err(|_| "database.error".to_string())?;
     let Some((row, people, tags)) = load_index_fields(&mut connection, document_id).await? else {
         return Ok(None);
     };
@@ -250,7 +250,7 @@ pub(crate) async fn save_document_embedding(
     .bind(blob)
     .execute(pool)
     .await
-    .map_err(|error| error.to_string())?;
+    .map_err(|_| "database.error".to_string())?;
     Ok(())
 }
 
@@ -304,22 +304,6 @@ pub(crate) fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     }
 }
 
-pub(crate) fn format_fixed_reply(query: &str, results: &[ChatDocumentResult]) -> String {
-    let trimmed = query.trim();
-    if results.is_empty() {
-        return format!("No documents found matching \"{trimmed}\".");
-    }
-    let noun = if results.len() == 1 {
-        "document"
-    } else {
-        "documents"
-    };
-    format!(
-        "Found {} {noun} matching \"{trimmed}\":",
-        results.len()
-    )
-}
-
 pub(crate) async fn search_documents(
     pool: &SqlitePool,
     embed_url: &str,
@@ -327,7 +311,7 @@ pub(crate) async fn search_documents(
 ) -> Result<ChatSearchResponse, String> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
-        return Err("Enter a search query.".into());
+        return Err("search.empty_query".into());
     }
 
     let mut fts_scores: HashMap<i64, f64> = HashMap::new();
@@ -339,7 +323,7 @@ pub(crate) async fn search_documents(
         .bind(&fts_query)
         .fetch_all(pool)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "database.error".to_string())?;
         for (doc_id, rank) in fts_rows {
             let normalized = 1.0 / (1.0 + (-rank).max(0.0).recip().min(100.0));
             fts_scores.insert(doc_id, normalized.max(0.1));
@@ -362,7 +346,7 @@ pub(crate) async fn search_documents(
         .bind(embedding_model())
         .fetch_all(pool)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "database.error".to_string())?;
         for (doc_id, blob) in rows {
             let doc_embedding = decode_embedding(&blob);
             let similarity = cosine_similarity(&query_embedding, &doc_embedding);
@@ -414,7 +398,7 @@ pub(crate) async fn search_documents(
         .bind(doc_id)
         .fetch_optional(pool)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "database.error".to_string())?;
         if let Some(meta) = meta
             && let Some(file_path) = meta.file_path
         {
@@ -431,9 +415,8 @@ pub(crate) async fn search_documents(
         }
     }
 
-    let reply = format_fixed_reply(trimmed, &results);
     Ok(ChatSearchResponse {
-        reply,
+        query: trimmed.to_string(),
         results,
         used_embeddings,
     })
@@ -551,10 +534,7 @@ mod tests {
             assert_eq!(response.results[0].id, doc_id);
             assert_eq!(response.results[0].file_path, "/tmp/certs/rust.pdf");
             assert_eq!(response.results[0].matched_by, "keyword");
-            assert_eq!(
-                response.reply,
-                "Found 1 document matching \"certificacao programacao sao paulo!\":"
-            );
+            assert_eq!(response.query, "certificacao programacao sao paulo!");
         });
     }
 
@@ -627,13 +607,16 @@ mod tests {
     fn returns_fixed_empty_reply_and_rejects_blank_queries() {
         tauri::async_runtime::block_on(async {
             let pool = setup_pool().await;
-            assert!(search_documents(&pool, &unreachable_url(), "   ").await.is_err());
+            assert_eq!(
+                search_documents(&pool, &unreachable_url(), "   ").await.unwrap_err(),
+                "search.empty_query"
+            );
 
             let response = search_documents(&pool, &unreachable_url(), "quantum")
                 .await
                 .unwrap();
             assert!(response.results.is_empty());
-            assert_eq!(response.reply, "No documents found matching \"quantum\".");
+            assert_eq!(response.query, "quantum");
         });
     }
 
