@@ -18,16 +18,16 @@ pub fn run() {
             profile::save_profile,
             profile::save_profile_photo,
             profile::get_profile_photo,
-            document::hash_pdf,
+            document::hash_document,
             document::document_hash_exists,
-            document::store_document_pdf,
+            document::store_document,
             document::list_documents,
             document::list_academic_options,
             document::update_document,
-            pdf::read_selected_pdf,
+            pdf::read_selected_document,
             ollama::check_ollama,
             ollama::analyze_pdf_text,
-            document::open_document_pdf
+            document::open_document
         ])
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;

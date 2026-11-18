@@ -21,9 +21,9 @@ test("registration waits for PDF reading and Ollama analysis and rejects failed 
   const read = deferred();
   const analysis = deferred();
   const view = createDocuments((command) => {
-    if (command === "hash_pdf") return Promise.resolve("hash");
+    if (command === "hash_document") return Promise.resolve("hash");
     if (command === "document_hash_exists") return Promise.resolve(false);
-    if (command === "read_selected_pdf") return read.promise;
+    if (command === "read_selected_document") return read.promise;
     if (command === "check_ollama") return Promise.resolve("model_available");
     if (command === "analyze_pdf_text") return analysis.promise;
     throw new Error(command);
@@ -39,7 +39,7 @@ test("registration waits for PDF reading and Ollama analysis and rejects failed 
   assert.equal(registerButton(view).props.disabled, false);
 
   const failure = deferred();
-  const failedView = createDocuments((command) => command === "hash_pdf" ? Promise.resolve("hash") :
+  const failedView = createDocuments((command) => command === "hash_document" ? Promise.resolve("hash") :
     command === "document_hash_exists" ? Promise.resolve(false) : failure.promise);
   const failedProcessing = fileInput(failedView).props.onChange({ target: { files: [pdf("bad.pdf")] } });
   await new Promise(setImmediate);
@@ -90,11 +90,11 @@ test("filtered documents determine the displayed workload", async () => {
 
 test("changing PDFs and successful registration clear document fields", async () => {
   const view = createDocuments((command) => {
-    if (command === "hash_pdf") return Promise.resolve("hash");
+    if (command === "hash_document") return Promise.resolve("hash");
     if (command === "document_hash_exists") return Promise.resolve(false);
-    if (command === "read_selected_pdf") return Promise.resolve(reading);
+    if (command === "read_selected_document") return Promise.resolve(reading);
     if (command === "check_ollama") return Promise.resolve("unavailable");
-    if (command === "store_document_pdf") return Promise.resolve("saved.pdf");
+    if (command === "store_document") return Promise.resolve("saved.pdf");
     throw new Error(command);
   });
   await fileInput(view).props.onChange({ target: { files: [pdf("first.pdf")] } });
@@ -115,9 +115,9 @@ test("stale processing and duplicate PDFs cannot enable registration", async () 
   const firstRead = deferred();
   let count = 0;
   const view = createDocuments((command) => {
-    if (command === "hash_pdf") return Promise.resolve("hash");
+    if (command === "hash_document") return Promise.resolve("hash");
     if (command === "document_hash_exists") return Promise.resolve(++count === 2);
-    if (command === "read_selected_pdf") return count === 1 ? firstRead.promise : Promise.resolve(reading);
+    if (command === "read_selected_document") return count === 1 ? firstRead.promise : Promise.resolve(reading);
     if (command === "check_ollama") return Promise.resolve("unavailable");
     throw new Error(command);
   });
@@ -138,11 +138,11 @@ test("registration saves the current PDF reading without extracting it again", a
     let reads = 0;
     let savedText;
     const view = createDocuments((command, args) => {
-      if (command === "hash_pdf") return Promise.resolve("hash");
+      if (command === "hash_document") return Promise.resolve("hash");
       if (command === "document_hash_exists") return Promise.resolve(false);
-      if (command === "read_selected_pdf") { reads += 1; return Promise.resolve(result); }
+      if (command === "read_selected_document") { reads += 1; return Promise.resolve(result); }
       if (command === "check_ollama") return Promise.resolve("unavailable");
-      if (command === "store_document_pdf") {
+      if (command === "store_document") {
         savedText = args.document.extracted_text;
         return Promise.resolve("saved.pdf");
       }
@@ -165,10 +165,10 @@ test("allows manual registration and replacement without text or AI calls", asyn
         calls.push(command);
         if (command === "list_documents") return Promise.resolve([existing]);
         if (command === "list_academic_options") return Promise.resolve({ organizations: [], events: [], people: [], tags: [] });
-        if (command === "hash_pdf") return Promise.resolve("hash");
+        if (command === "hash_document") return Promise.resolve("hash");
         if (command === "document_hash_exists") return Promise.resolve(false);
-        if (command === "read_selected_pdf") return Promise.resolve({ ...reading, text, has_sufficient_text: false, warning: "OCR failed and no PDF text was extracted." });
-        if (command === "store_document_pdf" || command === "update_document") {
+        if (command === "read_selected_document") return Promise.resolve({ ...reading, text, has_sufficient_text: false, warning: "OCR failed and no PDF text was extracted." });
+        if (command === "store_document" || command === "update_document") {
           saved = { command, args };
           return Promise.resolve("saved.pdf");
         }
@@ -183,7 +183,7 @@ test("allows manual registration and replacement without text or AI calls", asyn
       assert.equal(calls.includes("check_ollama"), false);
       assert.equal(calls.includes("analyze_pdf_text"), false);
       await view.find((node) => node.type === "form").props.onSubmit({ preventDefault() {}, currentTarget: {} });
-      assert.equal(saved.command, editing ? "update_document" : "store_document_pdf");
+      assert.equal(saved.command, editing ? "update_document" : "store_document");
       assert.equal(saved.args.document.extracted_text, "");
       assert.equal(saved.args.document.original_filename, "manual.pdf");
       if (editing) {
@@ -200,12 +200,12 @@ test("blocks registration while checking or analyzing and enables it after a res
   const analysis = deferred();
   let saves = 0;
   const view = createDocuments((command) => {
-    if (command === "hash_pdf") return Promise.resolve("hash");
+    if (command === "hash_document") return Promise.resolve("hash");
     if (command === "document_hash_exists") return Promise.resolve(false);
-    if (command === "read_selected_pdf") return Promise.resolve(reading);
+    if (command === "read_selected_document") return Promise.resolve(reading);
     if (command === "check_ollama") return check.promise;
     if (command === "analyze_pdf_text") return analysis.promise;
-    if (command === "store_document_pdf") { saves += 1; return Promise.resolve("saved.pdf"); }
+    if (command === "store_document") { saves += 1; return Promise.resolve("saved.pdf"); }
     throw new Error(command);
   });
   const processing = fileInput(view).props.onChange({ target: { files: [pdf("manual.pdf")] } });
@@ -224,11 +224,11 @@ test("blocks registration while checking or analyzing and enables it after a res
 
 test("enables manual registration when Ollama is unavailable", async () => {
   const view = createDocuments((command) => {
-    if (command === "hash_pdf") return Promise.resolve("hash");
+    if (command === "hash_document") return Promise.resolve("hash");
     if (command === "document_hash_exists") return Promise.resolve(false);
-    if (command === "read_selected_pdf") return Promise.resolve(reading);
+    if (command === "read_selected_document") return Promise.resolve(reading);
     if (command === "check_ollama") return Promise.resolve("unavailable");
-    if (command === "store_document_pdf") return Promise.resolve("saved.pdf");
+    if (command === "store_document") return Promise.resolve("saved.pdf");
     throw new Error(command);
   });
   await fileInput(view).props.onChange({ target: { files: [pdf("manual.pdf")] } });
@@ -238,9 +238,9 @@ test("enables manual registration when Ollama is unavailable", async () => {
 test("late analysis preserves manually edited fields", async () => {
   const pending = deferred();
   const view = createDocuments((command) => {
-    if (command === "hash_pdf") return Promise.resolve("hash");
+    if (command === "hash_document") return Promise.resolve("hash");
     if (command === "document_hash_exists") return Promise.resolve(false);
-    if (command === "read_selected_pdf") return Promise.resolve(reading);
+    if (command === "read_selected_document") return Promise.resolve(reading);
     if (command === "check_ollama") return Promise.resolve("model_available");
     if (command === "analyze_pdf_text") return pending.promise;
     throw new Error(command);
@@ -267,9 +267,9 @@ test("changing PDF, editing, cancelling and unmounting ignore previous analysis"
     const view = createDocuments((command) => {
       if (command === "list_documents") return Promise.resolve([existing]);
       if (command === "list_academic_options") return Promise.resolve({ organizations: [], events: [], people: [], tags: [] });
-      if (command === "hash_pdf") return Promise.resolve("hash");
+      if (command === "hash_document") return Promise.resolve("hash");
       if (command === "document_hash_exists") return Promise.resolve(false);
-      if (command === "read_selected_pdf") return Promise.resolve(reading);
+      if (command === "read_selected_document") return Promise.resolve(reading);
       if (command === "check_ollama") return Promise.resolve("model_available");
       if (command === "analyze_pdf_text") return ++analyses === 1 ? pending.promise : Promise.resolve({ title: "Second PDF" });
       throw new Error(command);
@@ -288,4 +288,37 @@ test("changing PDF, editing, cancelling and unmounting ignore previous analysis"
     await processing;
     assert.equal(titleInput(view).props.value, before);
   }
+});
+
+test("accepts PNG and JPG certificates and rejects unsupported extensions", async () => {
+  for (const name of ["certificate.png", "certificate.jpg", "CERTIFICATE.JPEG"]) {
+    let stored;
+    const view = createDocuments((command, args) => {
+      if (command === "hash_document") return Promise.resolve("hash");
+      if (command === "document_hash_exists") return Promise.resolve(false);
+      if (command === "read_selected_document") return Promise.resolve({ ...reading, source: "ocr", used_ocr: true });
+      if (command === "check_ollama") return Promise.resolve("unavailable");
+      if (command === "store_document") {
+        stored = args;
+        return Promise.resolve(`documents/2025/certificate/${name}`);
+      }
+      throw new Error(command);
+    });
+    await fileInput(view).props.onChange({ target: { files: [pdf(name)] } });
+    assert.equal(registerButton(view).props.disabled, false);
+    await view.find((node) => node.type === "form").props.onSubmit({
+      preventDefault() {},
+      currentTarget: { type: "certificate", title: "Image certificate" },
+    });
+    assert.equal(stored.document.original_filename, name);
+  }
+
+  let invoked = false;
+  const rejectedView = createDocuments(() => {
+    invoked = true;
+    throw new Error("should not invoke");
+  });
+  await fileInput(rejectedView).props.onChange({ target: { files: [pdf("notes.txt")], value: "notes.txt" } });
+  assert.equal(invoked, false);
+  assert.equal(registerButton(rejectedView).props.disabled, true);
 });

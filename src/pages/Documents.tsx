@@ -115,16 +115,16 @@ function Documents() {
       setTags("");
     }
     if (!file) return;
-    if (!file.name.toLowerCase().endsWith(".pdf")) {
+    if (![".pdf", ".png", ".jpg", ".jpeg"].some((extension) => file.name.toLowerCase().endsWith(extension))) {
       event.target.value = "";
-      setFileStatus("Please select a PDF file.");
+      setFileStatus("Please select a PDF, PNG, or JPG file.");
       return;
     }
     setFileName(file.name);
     setFileStatus("Calculating SHA-256…");
     try {
       const data = Array.from(new Uint8Array(await file.arrayBuffer()));
-      const hash = await window.__TAURI__.core.invoke<string>("hash_pdf", { data });
+      const hash = await window.__TAURI__.core.invoke<string>("hash_document", { data });
       if (selected !== selection.current) return;
       setFileStatus("Checking for duplicates…");
       const exists = await window.__TAURI__.core.invoke<boolean>("document_hash_exists", { hash, excludeId: editing });
@@ -132,9 +132,9 @@ function Documents() {
         setFileStatus(exists ? `This file has already been registered.\nSHA-256: ${hash}` : `SHA-256: ${hash}`);
       }
       if (selected !== selection.current || exists) return;
-      setReadingStatus("Reading PDF…");
+      setReadingStatus("Reading file…");
       try {
-        const result = await window.__TAURI__.core.invoke<PdfReading>("read_selected_pdf", { data });
+        const result = await window.__TAURI__.core.invoke<PdfReading>("read_selected_document", { data });
         if (selected === selection.current) {
           setReading(result.text.trim() ? result : { ...result, text: "" });
           setReadingStatus("");
@@ -167,10 +167,10 @@ function Documents() {
           if (selected === selection.current) setAnalysisStatus(typeof error === "string" ? error : "Could not analyze the document.");
         }
       } catch (error) {
-        if (selected === selection.current) setReadingStatus(typeof error === "string" ? error : "Could not read the PDF.");
+        if (selected === selection.current) setReadingStatus(typeof error === "string" ? error : "Could not read the file.");
       }
     } catch {
-      if (selected === selection.current) setFileStatus("Could not process the PDF. Check the file and try again.");
+      if (selected === selection.current) setFileStatus("Could not process the file. Check the file and try again.");
     }
   }
 
@@ -183,7 +183,7 @@ function Documents() {
     const form = new FormData(event.currentTarget);
     const value = (name: string) => String(form.get(name) || "") || null;
     setSaving(true);
-    setFileStatus("Saving PDF…");
+    setFileStatus("Saving file…");
     try {
       const document = {
           document_type: form.get("type"),
@@ -211,7 +211,7 @@ function Documents() {
         message = "Document updated.";
       } else {
         const data = Array.from(new Uint8Array(await file!.arrayBuffer()));
-        const path = await window.__TAURI__.core.invoke<string>("store_document_pdf", { data, document });
+        const path = await window.__TAURI__.core.invoke<string>("store_document", { data, document });
         message = `Document registered: ${path}`;
       }
       setReady(false);
@@ -230,7 +230,7 @@ function Documents() {
       setFileStatus(message);
       setRevision((current) => current + 1);
     } catch (error) {
-      setFileStatus(typeof error === "string" ? error : "Could not save the PDF. Please try again.");
+      setFileStatus(typeof error === "string" ? error : "Could not save the file. Please try again.");
     } finally {
       setSaving(false);
     }
@@ -280,12 +280,12 @@ function Documents() {
     if (fileInput.current) fileInput.current.value = "";
   }
 
-  async function openPdf(id: number) {
+  async function openDocument(id: number) {
     setOpenError("");
     try {
-      await window.__TAURI__.core.invoke("open_document_pdf", { id });
+      await window.__TAURI__.core.invoke("open_document", { id });
     } catch {
-      setOpenError("Could not open the PDF. Check that the file is available.");
+      setOpenError("Could not open the file. Check that the file is available.");
     }
   }
 
@@ -312,7 +312,7 @@ function Documents() {
           ) : (
             <div className="documents-table">
               <table>
-                <thead><tr><th>Title</th><th>Type</th><th>Issue date</th><th>Workload (hours)</th><th>PDF</th><th>Edit</th></tr></thead>
+                <thead><tr><th>Title</th><th>Type</th><th>Issue date</th><th>Workload (hours)</th><th>File</th><th>Edit</th></tr></thead>
                 <tbody>
                   {visibleDocuments?.map((document) => (
                     <tr key={document.id}>
@@ -320,7 +320,7 @@ function Documents() {
                       <td>{document.type}</td>
                       <td>{document.issue_date || "—"}</td>
                       <td>{document.workload_hours ?? "—"}</td>
-                      <td><button type="button" className="open-pdf" onClick={() => openPdf(document.id)} aria-label={`Open PDF for ${document.title || `document ${document.id}`}`}>Open PDF</button></td>
+                      <td><button type="button" className="open-pdf" onClick={() => openDocument(document.id)} aria-label={`Open file for ${document.title || `document ${document.id}`}`}>Open file</button></td>
                       <td><button type="button" className="open-pdf" disabled={saving} onClick={() => editDocument(document)} aria-label={`Edit ${document.title || `document ${document.id}`}`}>Edit</button></td>
                     </tr>
                   ))}
@@ -367,7 +367,7 @@ function Documents() {
             </div>)}
             <button type="button" className="open-pdf" onClick={() => setPeople([...people, { name: "", role: "" }])}>Add person</button>
           </div>
-          <label className="profile-field-wide"><span>{editing === null ? "PDF file" : "Replace PDF (optional)"}</span><input ref={fileInput} type="file" accept=".pdf,application/pdf" onChange={handleFileChange} /></label>
+          <label className="profile-field-wide"><span>{editing === null ? "Document file (PDF, PNG, JPG)" : "Replace file (optional)"}</span><input ref={fileInput} type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" onChange={handleFileChange} /></label>
         </fieldset>
         {analysisStatus && <p role="status">{analysisStatus}</p>}
         <div className="document-file" aria-live="polite">
@@ -380,7 +380,7 @@ function Documents() {
         </div>
       </form>
       <section className="pdf-debug" aria-labelledby="pdf-debug-heading">
-        <h2 id="pdf-debug-heading">PDF text (debug)</h2>
+        <h2 id="pdf-debug-heading">Extracted text (debug)</h2>
         {readingStatus && <p role="status">{readingStatus}</p>}
         {reading && <>
           <p>Source: {reading.source} · OCR used: {reading.used_ocr ? "yes" : "no"}</p>
@@ -388,7 +388,7 @@ function Documents() {
           {!reading.has_sufficient_text && <p>The extracted text contains fewer than 20 non-whitespace characters.</p>}
           <pre>{reading.text || "No text extracted."}</pre>
         </>}
-        {!reading && !readingStatus && <p>Select a PDF to inspect its extracted text.</p>}
+        {!reading && !readingStatus && <p>Select a PDF, PNG, or JPG to inspect its extracted text.</p>}
         {reading && <>
           <h2>Document analysis (debug)</h2>
           {analysis && <pre>{JSON.stringify(analysis, null, 2)}</pre>}

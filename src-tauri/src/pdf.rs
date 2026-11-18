@@ -1,5 +1,7 @@
+use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, metadata::Orientation};
 use std::{
     fs,
+    io::Cursor,
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
@@ -151,11 +153,83 @@ fn with_pdf_file<T>(
     }
 }
 
+pub(crate) async fn validate_document_file(data: &[u8]) -> Result<(), String> {
+    if data.starts_with(b"%PDF-") {
+        return validate_pdf(data).await;
+    }
+    let data = data.to_vec();
+    tauri::async_runtime::spawn_blocking(move || {
+        decode_supported_image(&data).map(|_| ())
+    })
+    .await
+    .map_err(|error| format!("Image validation failed: {error}"))?
+}
+
+fn decode_supported_image(data: &[u8]) -> Result<DynamicImage, String> {
+    let format = image::guess_format(data)
+        .map_err(|_| "The selected file is not a supported PDF, PNG, or JPG.".to_string())?;
+    if !matches!(format, ImageFormat::Png | ImageFormat::Jpeg) {
+        return Err("The selected file is not a supported PDF, PNG, or JPG.".into());
+    }
+    let mut decoder = ImageReader::with_format(Cursor::new(data), format)
+        .into_decoder()
+        .map_err(|error| format!("Could not read image: {error}"))?;
+    let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+    let mut image = DynamicImage::from_decoder(decoder)
+        .map_err(|error| format!("Could not decode image: {error}"))?;
+    image.apply_orientation(orientation);
+    Ok(image)
+}
+
+fn read_image(data: &[u8], tesseract: &Path) -> Result<ExtractedText, String> {
+    let image = decode_supported_image(data)?;
+    let directory = create_temp_directory()?;
+    let path = directory.join("input.png");
+    let ocr_result = image
+        .save_with_format(&path, ImageFormat::Png)
+        .map_err(|error| format!("Could not prepare image for OCR: {error}"))
+        .and_then(|()| run_tesseract_ocr(&path, tesseract, "image"));
+    if let Err(error) = fs::remove_dir_all(&directory) {
+        return Err(format!(
+            "Could not remove OCR temporary directory {}: {error}{}",
+            directory.display(),
+            ocr_result
+                .err()
+                .map(|original| format!("; {original}"))
+                .unwrap_or_default()
+        ));
+    }
+    Ok(match ocr_result {
+        Ok(text) => ExtractedText {
+            has_sufficient_text: has_sufficient_text(&text),
+            text,
+            source: "ocr",
+            used_ocr: true,
+            warning: None,
+        },
+        Err(error) => ExtractedText {
+            has_sufficient_text: false,
+            text: String::new(),
+            source: "ocr",
+            used_ocr: false,
+            warning: Some(format!("OCR failed: {error}")),
+        },
+    })
+}
+
+fn read_document(data: &[u8]) -> Result<ExtractedText, String> {
+    if data.starts_with(b"%PDF-") {
+        read_pdf(data)
+    } else {
+        read_image(data, Path::new("tesseract"))
+    }
+}
+
 #[tauri::command]
-pub(crate) async fn read_selected_pdf(data: Vec<u8>) -> Result<ExtractedText, String> {
-    tauri::async_runtime::spawn_blocking(move || read_pdf(&data))
+pub(crate) async fn read_selected_document(data: Vec<u8>) -> Result<ExtractedText, String> {
+    tauri::async_runtime::spawn_blocking(move || read_document(&data))
         .await
-        .map_err(|error| format!("PDF reading failed: {error}"))?
+        .map_err(|error| format!("Document reading failed: {error}"))?
 }
 
 fn run_ocr(
@@ -197,29 +271,33 @@ fn run_ocr(
     }
     let mut text = String::new();
     for (number, page) in pages {
-        let output = Command::new(tesseract)
-            .arg(page)
-            .arg("stdout")
-            .arg("-l")
-            .arg("por+eng+spa")
-            .arg("--psm")
-            .arg("1")
-            .output()
-            .map_err(|error| format!("Could not run tesseract for page {number}: {error}"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "OCR failed on page {number} (tesseract): {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
-        }
-        let page_text = String::from_utf8(output.stdout)
-            .map_err(|error| format!("OCR returned invalid UTF-8 on page {number}: {error}"))?;
+        let page_text = run_tesseract_ocr(&page, tesseract, &format!("page {number}"))?;
         if !text.is_empty() {
             text.push('\n');
         }
         text.push_str(&page_text);
     }
     Ok(text)
+}
+
+fn run_tesseract_ocr(image: &Path, tesseract: &Path, label: &str) -> Result<String, String> {
+    let output = Command::new(tesseract)
+        .arg(image)
+        .arg("stdout")
+        .arg("-l")
+        .arg("por+eng+spa")
+        .arg("--psm")
+        .arg("1")
+        .output()
+        .map_err(|error| format!("Could not run tesseract for {label}: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "OCR failed on {label} (tesseract): {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    String::from_utf8(output.stdout)
+        .map_err(|error| format!("OCR returned invalid UTF-8 on {label}: {error}"))
 }
 
 fn has_sufficient_text(text: &str) -> bool {
@@ -485,6 +563,88 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("tesseract"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn jpeg_with_exif_orientation(width: u32, height: u32, orientation: u16) -> Vec<u8> {
+        let image = DynamicImage::new_rgb8(width, height);
+        let mut raw_jpeg = Vec::new();
+        image
+            .write_to(&mut Cursor::new(&mut raw_jpeg), ImageFormat::Jpeg)
+            .unwrap();
+        let mut tiff = Vec::new();
+        tiff.extend_from_slice(b"II*\0");
+        tiff.extend_from_slice(&8u32.to_le_bytes());
+        tiff.extend_from_slice(&1u16.to_le_bytes());
+        tiff.extend_from_slice(&0x0112u16.to_le_bytes());
+        tiff.extend_from_slice(&3u16.to_le_bytes());
+        tiff.extend_from_slice(&1u32.to_le_bytes());
+        tiff.extend_from_slice(&orientation.to_le_bytes());
+        tiff.extend_from_slice(&0u16.to_le_bytes());
+        tiff.extend_from_slice(&0u32.to_le_bytes());
+        let mut app1 = Vec::new();
+        app1.extend_from_slice(&[0xFF, 0xE1]);
+        let length = (2 + 6 + tiff.len()) as u16;
+        app1.extend_from_slice(&length.to_be_bytes());
+        app1.extend_from_slice(b"Exif\0\0");
+        app1.extend_from_slice(&tiff);
+        let mut result = Vec::with_capacity(raw_jpeg.len() + app1.len());
+        result.extend_from_slice(&raw_jpeg[..2]);
+        result.extend_from_slice(&app1);
+        result.extend_from_slice(&raw_jpeg[2..]);
+        result
+    }
+
+    #[test]
+    fn applies_exif_orientation_and_rejects_unsupported_image_formats() {
+        let oriented_jpeg = jpeg_with_exif_orientation(4, 2, 6);
+        let decoded = decode_supported_image(&oriented_jpeg).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (2, 4));
+
+        let mut png = Vec::new();
+        DynamicImage::new_rgba8(3, 5)
+            .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
+            .unwrap();
+        let decoded_png = decode_supported_image(&png).unwrap();
+        assert_eq!((decoded_png.width(), decoded_png.height()), (3, 5));
+
+        let mut gif = Vec::new();
+        DynamicImage::new_rgba8(2, 2)
+            .write_to(&mut Cursor::new(&mut gif), ImageFormat::Gif)
+            .unwrap();
+        assert!(decode_supported_image(&gif).is_err());
+        assert!(decode_supported_image(b"not an image").is_err());
+        assert!(decode_supported_image(&oriented_jpeg[..10]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn image_ocr_uses_osd_and_handles_tesseract_failures() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = create_temp_directory().unwrap();
+        let tesseract = root.join("tesseract");
+        fs::write(
+            &tesseract,
+            "#!/bin/sh\n[ \"$2\" = stdout ] && [ \"$3\" = -l ] && [ \"$4\" = por+eng+spa ] && [ \"$5\" = --psm ] && [ \"$6\" = 1 ] || exit 1\nprintf 'Recognized certificate text'\n",
+        )
+        .unwrap();
+        fs::set_permissions(&tesseract, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let jpeg = jpeg_with_exif_orientation(4, 2, 6);
+        let extracted = read_image(&jpeg, &tesseract).unwrap();
+        assert_eq!(extracted.source, "ocr");
+        assert!(extracted.used_ocr);
+        assert!(extracted.has_sufficient_text);
+        assert_eq!(extracted.text, "Recognized certificate text");
+        assert!(extracted.warning.is_none());
+
+        let failed = read_image(&jpeg, Path::new("/bin/false")).unwrap();
+        assert_eq!(failed.source, "ocr");
+        assert!(!failed.used_ocr);
+        assert!(!failed.has_sufficient_text);
+        assert!(failed.text.is_empty());
+        assert!(failed.warning.unwrap().contains("OCR failed"));
+
         fs::remove_dir_all(root).unwrap();
     }
 }

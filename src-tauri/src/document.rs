@@ -68,11 +68,20 @@ fn sha256(data: &[u8]) -> String {
     hash.iter().map(|value| format!("{value:08x}")).collect()
 }
 
-#[tauri::command]
-pub(crate) fn hash_pdf(data: Vec<u8>) -> Result<String, String> {
-    if !data.starts_with(b"%PDF-") {
-        return Err("The selected file is not a PDF.".into());
+fn document_extension(data: &[u8]) -> Result<&'static str, String> {
+    if data.starts_with(b"%PDF-") {
+        return Ok("pdf");
     }
+    match image::guess_format(data) {
+        Ok(image::ImageFormat::Png) => Ok("png"),
+        Ok(image::ImageFormat::Jpeg) => Ok("jpg"),
+        _ => Err("The selected file is not a PDF, PNG, or JPG.".into()),
+    }
+}
+
+#[tauri::command]
+pub(crate) fn hash_document(data: Vec<u8>) -> Result<String, String> {
+    document_extension(&data)?;
     Ok(sha256(&data))
 }
 
@@ -153,7 +162,7 @@ pub(crate) async fn list_documents(
         .map_err(|error| error.to_string())
 }
 
-async fn document_pdf_path(pool: &SqlitePool, root: &Path, id: i64) -> Result<PathBuf, String> {
+async fn document_file_path(pool: &SqlitePool, root: &Path, id: i64) -> Result<PathBuf, String> {
     let stored_path: Option<String> =
         sqlx::query_scalar("SELECT file_path FROM documents WHERE id = ?")
             .bind(id)
@@ -161,27 +170,28 @@ async fn document_pdf_path(pool: &SqlitePool, root: &Path, id: i64) -> Result<Pa
             .await
             .map_err(|error| error.to_string())?
             .flatten();
-    let path = stored_path.ok_or("PDF not found for this document.")?;
+    let path = stored_path.ok_or("File not found for this document.")?;
     let directory = root
         .join("documents")
         .canonicalize()
-        .map_err(|_| "PDF folder not found.")?;
+        .map_err(|_| "Documents folder not found.")?;
     let path = Path::new(&path)
         .canonicalize()
-        .map_err(|_| "PDF file not found.")?;
-    if !path.starts_with(directory)
-        || !path.is_file()
-        || !path
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
-    {
-        return Err("Invalid PDF file path.".into());
+        .map_err(|_| "Document file not found.")?;
+    let valid_extension = path.extension().is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("pdf")
+            || extension.eq_ignore_ascii_case("png")
+            || extension.eq_ignore_ascii_case("jpg")
+            || extension.eq_ignore_ascii_case("jpeg")
+    });
+    if !path.starts_with(directory) || !path.is_file() || !valid_extension {
+        return Err("Invalid document file path.".into());
     }
     Ok(path)
 }
 
 #[tauri::command]
-pub(crate) async fn open_document_pdf(
+pub(crate) async fn open_document(
     app: tauri::AppHandle,
     pool: State<'_, SqlitePool>,
     id: i64,
@@ -190,7 +200,7 @@ pub(crate) async fn open_document_pdf(
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let path = document_pdf_path(&pool, &root, id).await?;
+    let path = document_file_path(&pool, &root, id).await?;
     #[cfg(target_os = "windows")]
     let program = "explorer";
     #[cfg(target_os = "macos")]
@@ -397,7 +407,7 @@ mod tests {
                     .unwrap();
             assert!(text.is_empty());
             assert_eq!(
-                fs::read(document_pdf_path(&pool, &root, id).await.unwrap()).unwrap(),
+                fs::read(document_file_path(&pool, &root, id).await.unwrap()).unwrap(),
                 REPLACEMENT_PDF
             );
             fs::remove_dir_all(root).unwrap();
@@ -543,11 +553,11 @@ mod tests {
             document.original_filename = "must not overwrite.pdf".into();
             document.extracted_text = "must not overwrite".into();
             let collision =
-                store_pdf(&root, REPLACEMENT_PDF, "article", "2026", "Updated").unwrap();
+                store_file(&root, REPLACEMENT_PDF, "article", "2026", "Updated").unwrap();
             update_document_record(&root, &pool, id, &document, None)
                 .await
                 .unwrap();
-            let relocated = document_pdf_path(&pool, &root, id).await.unwrap();
+            let relocated = document_file_path(&pool, &root, id).await.unwrap();
             assert!(relocated.ends_with("2026/article/2026-article-updated-1.pdf"));
             assert!(!original.exists());
             assert_eq!(fs::read(&collision).unwrap(), REPLACEMENT_PDF);
@@ -572,7 +582,7 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(
-                document_pdf_path(&pool, &root, id).await.unwrap(),
+                document_file_path(&pool, &root, id).await.unwrap(),
                 PathBuf::from(unchanged)
             );
             document.title = Some("Rejected".into());
@@ -629,7 +639,7 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(
-                fs::read(document_pdf_path(&pool, &root, id).await.unwrap()).unwrap(),
+                fs::read(document_file_path(&pool, &root, id).await.unwrap()).unwrap(),
                 REPLACEMENT_PDF
             );
             fs::remove_dir_all(root).unwrap();
@@ -650,7 +660,7 @@ mod tests {
             sha256(&vec![b'a'; 1_000_000]),
             "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
         );
-        assert!(hash_pdf(b"not a pdf".to_vec()).is_err());
+        assert!(hash_document(b"not a pdf".to_vec()).is_err());
     }
 
     #[test]
@@ -701,21 +711,21 @@ mod tests {
             ));
             let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
             crate::database::create_tables(&pool).await.unwrap();
-            let path = store_pdf(&root, ORIGINAL_PDF, "course", "2026", "test").unwrap();
+            let path = store_file(&root, ORIGINAL_PDF, "course", "2026", "test").unwrap();
             sqlx::query("INSERT INTO documents (id, type, file_path) VALUES (1, 'course', ?), (2, 'course', ?), (3, 'course', NULL)")
                 .bind(path.to_string_lossy().as_ref())
                 .bind(root.join("outside.pdf").to_string_lossy().as_ref())
                 .execute(&pool).await.unwrap();
             fs::write(root.join("outside.pdf"), ORIGINAL_PDF).unwrap();
             assert_eq!(
-                document_pdf_path(&pool, &root, 1).await.unwrap(),
+                document_file_path(&pool, &root, 1).await.unwrap(),
                 path.canonicalize().unwrap()
             );
-            assert!(document_pdf_path(&pool, &root, 2).await.is_err());
-            assert!(document_pdf_path(&pool, &root, 3).await.is_err());
-            assert!(document_pdf_path(&pool, &root, 4).await.is_err());
+            assert!(document_file_path(&pool, &root, 2).await.is_err());
+            assert!(document_file_path(&pool, &root, 3).await.is_err());
+            assert!(document_file_path(&pool, &root, 4).await.is_err());
             fs::remove_file(path).unwrap();
-            assert!(document_pdf_path(&pool, &root, 1).await.is_err());
+            assert!(document_file_path(&pool, &root, 1).await.is_err());
             fs::remove_dir_all(root).unwrap();
         });
     }
@@ -730,8 +740,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let first = store_pdf(&root, ORIGINAL_PDF, "course", "2026", "../My: Course").unwrap();
-        let second = store_pdf(&root, REPLACEMENT_PDF, "course", "2026", "../My: Course").unwrap();
+        let first = store_file(&root, ORIGINAL_PDF, "course", "2026", "../My: Course").unwrap();
+        let second = store_file(&root, REPLACEMENT_PDF, "course", "2026", "../My: Course").unwrap();
         assert_eq!(
             first,
             root.join("documents/2026/course/2026-course-my--course.pdf")
@@ -742,10 +752,66 @@ mod tests {
         );
         assert_eq!(fs::read(first).unwrap(), ORIGINAL_PDF);
         assert_eq!(fs::read(second).unwrap(), REPLACEMENT_PDF);
-        assert!(store_pdf(&root, ORIGINAL_PDF, "../course", "2026", "Title").is_err());
-        assert!(store_pdf(&root, ORIGINAL_PDF, "course", "../x", "Title").is_err());
-        assert!(store_pdf(&root, b"invalid", "course", "2026", "Title").is_err());
+        assert!(store_file(&root, ORIGINAL_PDF, "../course", "2026", "Title").is_err());
+        assert!(store_file(&root, ORIGINAL_PDF, "course", "../x", "Title").is_err());
+        assert!(store_file(&root, b"invalid", "course", "2026", "Title").is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    fn encoded_image(format: image::ImageFormat) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut std::io::Cursor::new(&mut bytes), format)
+            .unwrap();
+        bytes
+    }
+
+    #[test]
+    fn registers_relocates_replaces_and_resolves_png_and_jpg_in_original_format() {
+        tauri::async_runtime::block_on(async {
+            let root = test_root("document-images");
+            let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+            crate::database::create_tables(&pool).await.unwrap();
+            let png = encoded_image(image::ImageFormat::Png);
+            let jpg = encoded_image(image::ImageFormat::Jpeg);
+            assert_eq!(hash_document(png.clone()).unwrap(), sha256(&png));
+            assert_eq!(hash_document(jpg.clone()).unwrap(), sha256(&jpg));
+
+            let mut input = document_input();
+            input.original_filename = "certificate.png".into();
+            let png_path = register_document(&root, &pool, &png, &input).await.unwrap();
+            assert_eq!(png_path.extension().and_then(|ext| ext.to_str()), Some("png"));
+            assert_eq!(fs::read(&png_path).unwrap(), png);
+
+            let id = load_documents(&pool).await.unwrap()[0].id;
+            assert_eq!(
+                document_file_path(&pool, &root, id).await.unwrap(),
+                png_path.canonicalize().unwrap()
+            );
+
+            input.title = Some("Relocated".into());
+            update_document_record(&root, &pool, id, &input, None)
+                .await
+                .unwrap();
+            let relocated = document_file_path(&pool, &root, id).await.unwrap();
+            assert_eq!(relocated.extension().and_then(|ext| ext.to_str()), Some("png"));
+            assert_eq!(fs::read(&relocated).unwrap(), png);
+
+            input.original_filename = "certificate.jpeg".into();
+            update_document_record(&root, &pool, id, &input, Some(&jpg))
+                .await
+                .unwrap();
+            let replaced = document_file_path(&pool, &root, id).await.unwrap();
+            assert_eq!(replaced.extension().and_then(|ext| ext.to_str()), Some("jpg"));
+            assert_eq!(fs::read(&replaced).unwrap(), jpg);
+            assert!(!relocated.exists());
+
+            let gif = encoded_image(image::ImageFormat::Gif);
+            assert!(hash_document(gif.clone()).is_err());
+            assert!(register_document(&root, &pool, &gif, &input).await.is_err());
+            assert!(register_document(&root, &pool, &jpg[..8], &input).await.is_err());
+            fs::remove_dir_all(root).unwrap();
+        });
     }
 
     #[test]
@@ -873,7 +939,7 @@ mod tests {
                 .unwrap(),
                 "original text"
             );
-            let reorganized = document_pdf_path(&pool, &root, list[0].id).await.unwrap();
+            let reorganized = document_file_path(&pool, &root, list[0].id).await.unwrap();
             assert!(!original.exists());
             assert!(reorganized.ends_with("unknown-course-updated.pdf"));
             assert_eq!(fs::read(&reorganized).unwrap(), ORIGINAL_PDF);
@@ -905,7 +971,7 @@ mod tests {
             update_document_record(&root, &pool, list[0].id, &document, Some(REPLACEMENT_PDF))
                 .await
                 .unwrap();
-            let replacement = document_pdf_path(&pool, &root, list[0].id).await.unwrap();
+            let replacement = document_file_path(&pool, &root, list[0].id).await.unwrap();
             assert!(!original.exists());
             assert!(!reorganized.exists());
             assert_eq!(fs::read(replacement).unwrap(), REPLACEMENT_PDF);
@@ -931,24 +997,22 @@ use std::{
 };
 use tauri::{Manager, State};
 
-fn store_pdf(
+fn store_file(
     root: &Path,
     data: &[u8],
     document_type: &str,
     year: &str,
     title: &str,
 ) -> Result<PathBuf, String> {
-    if !data.starts_with(b"%PDF-") {
-        return Err("The selected file is not a PDF.".into());
-    }
-    let (relative, base) = pdf_location(document_type, year, title)?;
+    let extension = document_extension(data)?;
+    let (relative, base) = document_location(document_type, year, title)?;
     let directory = root.join("documents").join(relative);
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     for number in 0u32.. {
         let name = if number == 0 {
-            format!("{base}.pdf")
+            format!("{base}.{extension}")
         } else {
-            format!("{base}-{number}.pdf")
+            format!("{base}-{number}.{extension}")
         };
         let path = directory.join(name);
         match fs::OpenOptions::new()
@@ -970,7 +1034,11 @@ fn store_pdf(
     Err("Could not create a unique filename.".into())
 }
 
-fn pdf_location(document_type: &str, year: &str, title: &str) -> Result<(PathBuf, String), String> {
+fn document_location(
+    document_type: &str,
+    year: &str,
+    title: &str,
+) -> Result<(PathBuf, String), String> {
     if ![
         "certificate",
         "course",
@@ -1105,7 +1173,7 @@ impl DocumentInput {
         {
             return Err("The start date must not be after the end date.".into());
         }
-        pdf_location(
+        document_location(
             &self.document_type,
             self.year(),
             self.title.as_deref().unwrap_or(""),
@@ -1215,7 +1283,7 @@ async fn register_document(
     document: &DocumentInput,
 ) -> Result<PathBuf, String> {
     document.validate()?;
-    crate::pdf::validate_pdf(data).await?;
+    crate::pdf::validate_document_file(data).await?;
     let hash = sha256(data);
     let mut transaction = pool
         .begin_with("BEGIN IMMEDIATE")
@@ -1231,7 +1299,7 @@ async fn register_document(
         return Err("This file has already been registered.".into());
     }
     let year = document.year();
-    let path = store_pdf(
+    let path = store_file(
         root,
         data,
         &document.document_type,
@@ -1283,7 +1351,7 @@ async fn update_document_record(
 ) -> Result<(), String> {
     document.validate()?;
     if let Some(data) = data {
-        crate::pdf::validate_pdf(data).await?;
+        crate::pdf::validate_document_file(data).await?;
     }
     let mut transaction = pool
         .begin_with("BEGIN IMMEDIATE")
@@ -1292,12 +1360,12 @@ async fn update_document_record(
     let original: StoredDocument = sqlx::query_as("SELECT type, title, COALESCE(issue_date, start_date, end_date) AS date, file_path FROM documents WHERE id = ?")
         .bind(id).fetch_optional(&mut *transaction).await.map_err(|error| error.to_string())?
         .ok_or("Document not found.")?;
-    let old_location = pdf_location(
+    let old_location = document_location(
         &original.r#type,
         document_year(original.date.as_deref()),
         original.title.as_deref().unwrap_or(""),
     )?;
-    let new_location = pdf_location(
+    let new_location = document_location(
         &document.document_type,
         document.year(),
         document.title.as_deref().unwrap_or(""),
@@ -1309,7 +1377,7 @@ async fn update_document_record(
         None
     };
     if relocate && data.is_none() && previous.is_none() {
-        return Err("The managed PDF is required to reorganize this document.".into());
+        return Err("The managed file is required to reorganize this document.".into());
     }
     let result = sqlx::query("UPDATE documents SET type = ?, title = ?, role = ?, issue_date = ?, start_date = ?, end_date = ?, workload_hours = ?, city = ?, country = ?, validation_code = ?, validation_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
         .bind(&document.document_type).bind(&document.title).bind(&document.role)
@@ -1327,13 +1395,11 @@ async fn update_document_record(
             .await
             .map_err(|error| error.to_string());
     }
-    let pdf = data
+    let file_bytes = data
         .or_else(|| previous.as_ref().map(|(_, bytes)| bytes.as_slice()))
-        .ok_or("PDF not found for this document.")?;
-    if !pdf.starts_with(b"%PDF-") {
-        return Err("The selected file is not a PDF.".into());
-    }
-    let hash = sha256(pdf);
+        .ok_or("File not found for this document.")?;
+    document_extension(file_bytes)?;
+    let hash = sha256(file_bytes);
     if data.is_some() {
         let exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM documents WHERE file_hash = ? AND id != ?)",
@@ -1347,9 +1413,9 @@ async fn update_document_record(
             return Err("This file has already been registered.".into());
         }
     }
-    let path = store_pdf(
+    let path = store_file(
         root,
-        pdf,
+        file_bytes,
         &document.document_type,
         document.year(),
         document.title.as_deref().unwrap_or(""),
@@ -1392,7 +1458,7 @@ pub(crate) async fn update_document(
 }
 
 #[tauri::command]
-pub(crate) async fn store_document_pdf(
+pub(crate) async fn store_document(
     app: tauri::AppHandle,
     pool: State<'_, SqlitePool>,
     data: Vec<u8>,
