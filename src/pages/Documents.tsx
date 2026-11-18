@@ -53,6 +53,9 @@ function Documents() {
   const [listError, setListError] = useState("");
   const [optionsError, setOptionsError] = useState("");
   const [openError, setOpenError] = useState("");
+  const [deleteError, setDeleteError] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [filter, setFilter] = useState("");
   const [search, setSearch] = useState("");
   const [year, setYear] = useState("");
@@ -289,6 +292,22 @@ function Documents() {
     }
   }
 
+  async function deleteDocument(id: number) {
+    if (deleting) return;
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      await window.__TAURI__.core.invoke("delete_document", { id });
+      setConfirmDeleteId(null);
+      if (editing === id) cancelEdit();
+      setRevision((current) => current + 1);
+    } catch (error) {
+      setDeleteError(typeof error === "string" ? error : "Could not delete the document.");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   return (
     <section className="profile">
       <h1>Documents</h1>
@@ -312,7 +331,7 @@ function Documents() {
           ) : (
             <div className="documents-table">
               <table>
-                <thead><tr><th>Title</th><th>Type</th><th>Issue date</th><th>Workload (hours)</th><th>File</th><th>Edit</th></tr></thead>
+                <thead><tr><th>Title</th><th>Type</th><th>Issue date</th><th>Workload (hours)</th><th>File</th><th>Edit</th><th>Delete</th></tr></thead>
                 <tbody>
                   {visibleDocuments?.map((document) => (
                     <tr key={document.id}>
@@ -321,7 +340,17 @@ function Documents() {
                       <td>{document.issue_date || "—"}</td>
                       <td>{document.workload_hours ?? "—"}</td>
                       <td><button type="button" className="open-pdf" onClick={() => openDocument(document.id)} aria-label={`Open file for ${document.title || `document ${document.id}`}`}>Open file</button></td>
-                      <td><button type="button" className="open-pdf" disabled={saving} onClick={() => editDocument(document)} aria-label={`Edit ${document.title || `document ${document.id}`}`}>Edit</button></td>
+                      <td><button type="button" className="open-pdf" disabled={saving || deleting} onClick={() => editDocument(document)} aria-label={`Edit ${document.title || `document ${document.id}`}`}>Edit</button></td>
+                      <td>
+                        {confirmDeleteId === document.id ? (
+                          <span className="delete-actions">
+                            <button type="button" className="delete-confirm" disabled={deleting} onClick={() => deleteDocument(document.id)} aria-label={`Confirm delete ${document.title || `document ${document.id}`}`}>Confirm delete</button>
+                            <button type="button" className="open-pdf" disabled={deleting} onClick={() => setConfirmDeleteId(null)}>Cancel</button>
+                          </span>
+                        ) : (
+                          <button type="button" className="open-pdf" disabled={saving || deleting} onClick={() => { setDeleteError(""); setConfirmDeleteId(document.id); }} aria-label={`Delete ${document.title || `document ${document.id}`}`}>Delete</button>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -330,6 +359,7 @@ function Documents() {
           )
         )}
         {openError && <p role="alert">{openError}</p>}
+        {deleteError && <p role="alert">{deleteError}</p>}
       </section>
       <h2 ref={editingHeading} tabIndex={-1} className="document-form-heading">{editing === null ? "Register a document" : "Edit document"}</h2>
       <form onSubmit={handleSubmit}>

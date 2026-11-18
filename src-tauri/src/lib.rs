@@ -24,6 +24,7 @@ pub fn run() {
             document::list_documents,
             document::list_academic_options,
             document::update_document,
+            document::delete_document,
             pdf::read_selected_document,
             ollama::check_ollama,
             ollama::analyze_pdf_text,
@@ -34,6 +35,17 @@ pub fn run() {
             std::fs::create_dir_all(&data_dir)?;
             let pool =
                 tauri::async_runtime::block_on(database::initialize(&data_dir.join("app.db")))?;
+            if let Ok(home_dir) = app.path().home_dir()
+                && let Ok(documents_dir) =
+                    tauri::async_runtime::block_on(profile::load_documents_dir(&pool, &home_dir))
+            {
+                let legacy_dir = data_dir.join("documents");
+                let _ = tauri::async_runtime::block_on(document::reorganize_documents(
+                    &pool,
+                    &documents_dir,
+                    &[&legacy_dir],
+                ));
+            }
             app.manage(pool);
             Ok(())
         })

@@ -6,12 +6,13 @@ test("requires all basic profile fields during editing as well as setup", async 
   for (const setup of [false, true]) {
     const profile = {
       name: "Name", email: "name@example.com", phone: "123", city: "City", state: "State", country: "Country",
-      github: "", linkedin: "", orcid: "", website: "", professional_summary: "", academic_summary: "",
+      github: "", linkedin: "", orcid: "", website: "", professional_summary: "", academic_summary: "", documents_dir: "",
     };
+    let savedProfile;
     let saves = 0;
-    const view = createComponent("Profile", (command) => {
+    const view = createComponent("Profile", (command, args) => {
       if (command === "get_profile") return Promise.resolve(profile);
-      if (command === "save_profile") { saves += 1; return Promise.resolve(); }
+      if (command === "save_profile") { saves += 1; savedProfile = args.profile; return Promise.resolve(); }
       throw new Error(command);
     }, true, { setup });
     view.find(() => false);
@@ -28,7 +29,11 @@ test("requires all basic profile fields during editing as well as setup", async 
       input(label).props.onChange({ target: { value: profile[label.toLowerCase()] } });
     }
     assert.equal(input("Email").props.type, "email");
+    if (!setup) {
+      input("Documents folder").props.onChange({ target: { value: "~/CustomCerts" } });
+    }
     await view.find((node) => node.type === "form").props.onSubmit({ preventDefault() {} });
     assert.equal(saves, 1);
+    assert.equal(savedProfile.documents_dir, setup ? "" : "~/CustomCerts");
   }
 });

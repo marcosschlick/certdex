@@ -14,6 +14,7 @@ type ProfileData = {
   website: string;
   professional_summary: string;
   academic_summary: string;
+  documents_dir: string;
 };
 
 declare global {
@@ -26,7 +27,7 @@ declare global {
   }
 }
 
-const fields: { name: keyof ProfileData; label: string; multiline?: boolean }[] = [
+const fields: { name: keyof ProfileData; label: string; multiline?: boolean; placeholder?: string }[] = [
   { name: "name", label: "Name" },
   { name: "email", label: "Email" },
   { name: "phone", label: "Phone" },
@@ -37,6 +38,7 @@ const fields: { name: keyof ProfileData; label: string; multiline?: boolean }[] 
   { name: "linkedin", label: "LinkedIn" },
   { name: "orcid", label: "ORCID" },
   { name: "website", label: "Website" },
+  { name: "documents_dir", label: "Documents folder", placeholder: "~/Certdex" },
   { name: "professional_summary", label: "Professional summary", multiline: true },
   { name: "academic_summary", label: "Academic summary", multiline: true },
 ];
@@ -64,7 +66,9 @@ function Profile({ setup = false, onComplete, onPhotoChange }: { setup?: boolean
     setSaving(true);
     setMessage("");
     try {
-      await window.__TAURI__.core.invoke("save_profile", { profile });
+      await window.__TAURI__.core.invoke("save_profile", {
+        profile: { ...profile, documents_dir: profile.documents_dir ?? "" },
+      });
       if (setup) onComplete?.();
       else setMessage("Profile saved.");
     } catch (error) {
@@ -108,12 +112,12 @@ function Profile({ setup = false, onComplete, onPhotoChange }: { setup?: boolean
               <label key={field.name} className={field.multiline ? "profile-field-wide" : undefined}>
                 <span>{field.label}</span>
                 {field.multiline ? (
-                  <textarea value={profile[field.name]} rows={4} onChange={(event) => {
+                  <textarea value={profile[field.name] ?? ""} rows={4} onChange={(event) => {
                     setProfile({ ...profile, [field.name]: event.target.value });
                     setMessage("");
                   }} />
                 ) : (
-                  <input required={requiredProfileFields.some((name) => name === field.name)} type={field.name === "email" ? "email" : "text"} value={profile[field.name]} onChange={(event) => {
+                  <input required={requiredProfileFields.some((name) => name === field.name)} type={field.name === "email" ? "email" : "text"} placeholder={field.placeholder} value={profile[field.name] ?? ""} onChange={(event) => {
                     setProfile({ ...profile, [field.name]: event.target.value });
                     setMessage("");
                   }} />

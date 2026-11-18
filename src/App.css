@@ -339,6 +339,27 @@ h1 {
   outline-offset: 2px;
 }
 
+.delete-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.delete-confirm {
+  padding: 6px 10px;
+  border: 1px solid #df2935;
+  border-radius: 6px;
+  background: transparent;
+  color: #f8f8f8;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.delete-confirm:focus-visible {
+  outline: 2px solid #df2935;
+  outline-offset: 2px;
+}
+
 select {
   color-scheme: dark;
   accent-color: #327de1;

@@ -1,7 +1,11 @@
 use crate::managed_file::{commit_file_change, discard_file, read_managed_file};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqlitePool};
-use std::{fs, io::Write, path::Path};
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+};
 use tauri::{Manager, State};
 
 #[derive(Debug, Default, Deserialize, Serialize, FromRow, PartialEq)]
@@ -18,6 +22,36 @@ pub(crate) struct Profile {
     website: String,
     professional_summary: String,
     academic_summary: String,
+    #[serde(default)]
+    documents_dir: String,
+}
+
+pub(crate) fn resolve_documents_dir(home: &Path, configured: &str) -> Result<PathBuf, String> {
+    let trimmed = configured.trim();
+    if trimmed.is_empty() {
+        return Ok(home.join("Certdex"));
+    }
+    let path = if trimmed == "~" {
+        home.to_path_buf()
+    } else if let Some(rest) = trimmed.strip_prefix("~/").or_else(|| trimmed.strip_prefix("~\\")) {
+        home.join(rest)
+    } else {
+        PathBuf::from(trimmed)
+    };
+    if !path.is_absolute() {
+        return Err("Documents folder must be an absolute path or start with ~/.".into());
+    }
+    Ok(path)
+}
+
+pub(crate) async fn load_documents_dir(pool: &SqlitePool, home: &Path) -> Result<PathBuf, String> {
+    let configured: Option<String> =
+        sqlx::query_scalar("SELECT documents_dir FROM profile WHERE id = 1")
+            .fetch_optional(pool)
+            .await
+            .map_err(|error| error.to_string())?
+            .flatten();
+    resolve_documents_dir(home, configured.as_deref().unwrap_or(""))
 }
 
 async fn load(pool: &SqlitePool) -> Result<Profile, sqlx::Error> {
@@ -28,7 +62,8 @@ async fn load(pool: &SqlitePool) -> Result<Profile, sqlx::Error> {
             COALESCE(github, '') AS github, COALESCE(linkedin, '') AS linkedin,
             COALESCE(orcid, '') AS orcid, COALESCE(website, '') AS website,
             COALESCE(professional_summary, '') AS professional_summary,
-            COALESCE(academic_summary, '') AS academic_summary
+            COALESCE(academic_summary, '') AS academic_summary,
+            COALESCE(documents_dir, '') AS documents_dir
         FROM profile WHERE id = 1",
     )
     .fetch_optional(pool)
@@ -36,7 +71,7 @@ async fn load(pool: &SqlitePool) -> Result<Profile, sqlx::Error> {
     .unwrap_or_default())
 }
 
-async fn save(pool: &SqlitePool, profile: &Profile) -> Result<(), String> {
+async fn save(pool: &SqlitePool, home: &Path, profile: &Profile) -> Result<(), String> {
     if [
         &profile.name,
         &profile.email,
@@ -50,14 +85,16 @@ async fn save(pool: &SqlitePool, profile: &Profile) -> Result<(), String> {
     {
         return Err("Please complete all required profile fields.".into());
     }
+    resolve_documents_dir(home, &profile.documents_dir)?;
     sqlx::query(
-        "INSERT INTO profile (id, name, email, phone, city, state, country, github, linkedin, orcid, website, professional_summary, academic_summary)
-        VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "INSERT INTO profile (id, name, email, phone, city, state, country, github, linkedin, orcid, website, professional_summary, academic_summary, documents_dir)
+        VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET name = excluded.name, email = excluded.email,
             phone = excluded.phone, city = excluded.city, state = excluded.state,
             country = excluded.country, github = excluded.github, linkedin = excluded.linkedin,
             orcid = excluded.orcid, website = excluded.website,
-            professional_summary = excluded.professional_summary, academic_summary = excluded.academic_summary",
+            professional_summary = excluded.professional_summary, academic_summary = excluded.academic_summary,
+            documents_dir = excluded.documents_dir",
     )
     .bind(&profile.name)
     .bind(&profile.email)
@@ -71,6 +108,7 @@ async fn save(pool: &SqlitePool, profile: &Profile) -> Result<(), String> {
     .bind(&profile.website)
     .bind(&profile.professional_summary)
     .bind(&profile.academic_summary)
+    .bind(profile.documents_dir.trim())
     .execute(pool)
     .await.map_err(|error| error.to_string())?;
     Ok(())
@@ -83,10 +121,24 @@ pub(crate) async fn get_profile(pool: State<'_, SqlitePool>) -> Result<Profile, 
 
 #[tauri::command]
 pub(crate) async fn save_profile(
+    app: tauri::AppHandle,
     pool: State<'_, SqlitePool>,
     profile: Profile,
 ) -> Result<(), String> {
-    save(&pool, &profile).await
+    let home = app.path().home_dir().map_err(|error| error.to_string())?;
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let previous_dir = load_documents_dir(&pool, &home).await?;
+    save(&pool, &home, &profile).await?;
+    let next_dir = resolve_documents_dir(&home, &profile.documents_dir)?;
+    if next_dir != previous_dir {
+        let legacy_dir = data_dir.join("documents");
+        crate::document::reorganize_documents(&pool, &next_dir, &[&previous_dir, &legacy_dir])
+            .await?;
+    }
+    Ok(())
 }
 
 fn image_type(data: &[u8]) -> Option<(&'static str, &'static str)> {
@@ -239,14 +291,15 @@ mod tests {
         tauri::async_runtime::block_on(async {
             let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
             crate::database::create_tables(&pool).await.unwrap();
+            let home = std::env::temp_dir();
             let profile = complete_profile();
-            save(&pool, &profile).await.unwrap();
+            save(&pool, &home, &profile).await.unwrap();
             for field in ["name", "email", "phone", "city", "state", "country"] {
                 for missing in ["", " \t\n "] {
                     let mut data = serde_json::to_value(&profile).unwrap();
                     data[field] = serde_json::json!(missing);
                     let invalid = serde_json::from_value(data).unwrap();
-                    assert!(save(&pool, &invalid).await.is_err());
+                    assert!(save(&pool, &home, &invalid).await.is_err());
                     assert_eq!(load(&pool).await.unwrap(), profile);
                 }
             }
@@ -281,6 +334,7 @@ mod tests {
             let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
             crate::database::create_tables(&pool).await.unwrap();
             assert_eq!(load(&pool).await.unwrap(), Profile::default());
+            let home = std::env::temp_dir();
             let mut profile = Profile {
                 name: "Name".into(),
                 email: "Email".into(),
@@ -294,11 +348,12 @@ mod tests {
                 website: "Website".into(),
                 professional_summary: "Professional".into(),
                 academic_summary: "Academic".into(),
+                documents_dir: "~/CustomCerts".into(),
             };
-            save(&pool, &profile).await.unwrap();
+            save(&pool, &home, &profile).await.unwrap();
             assert_eq!(load(&pool).await.unwrap(), profile);
             profile.name = "Updated".into();
-            save(&pool, &profile).await.unwrap();
+            save(&pool, &home, &profile).await.unwrap();
             assert_eq!(load(&pool).await.unwrap(), profile);
             let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM profile")
                 .fetch_one(&pool)
@@ -322,8 +377,9 @@ mod tests {
             let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
             crate::database::create_tables(&pool).await.unwrap();
             assert!(load_photo(&root, &pool).await.unwrap().is_none());
+            let home = std::env::temp_dir();
             let profile = complete_profile();
-            save(&pool, &profile).await.unwrap();
+            save(&pool, &home, &profile).await.unwrap();
             let first = encoded_image(image::ImageFormat::Png);
             save_photo(&root, &pool, &first).await.unwrap();
             let photo = load_photo(&root, &pool).await.unwrap().unwrap();
@@ -342,7 +398,7 @@ mod tests {
             assert!(!Path::new(&first_path).exists());
             assert_eq!(fs::read_dir(root.join("profile")).unwrap().count(), 1);
             assert_eq!(load(&pool).await.unwrap(), profile);
-            save(&pool, &profile).await.unwrap();
+            save(&pool, &home, &profile).await.unwrap();
             assert_eq!(
                 load_photo(&root, &pool).await.unwrap().unwrap().data,
                 second
@@ -372,6 +428,40 @@ mod tests {
             save_photo(&root, &pool, &first).await.unwrap();
             assert_eq!(fs::read_dir(root.join("profile")).unwrap().count(), 1);
             fs::remove_dir_all(root).unwrap();
+        });
+    }
+
+    #[test]
+    fn resolves_default_tilde_and_absolute_documents_dir_and_rejects_relative() {
+        tauri::async_runtime::block_on(async {
+            let home = std::env::temp_dir();
+            assert_eq!(resolve_documents_dir(&home, "").unwrap(), home.join("Certdex"));
+            assert_eq!(resolve_documents_dir(&home, "  ").unwrap(), home.join("Certdex"));
+            assert_eq!(resolve_documents_dir(&home, "~").unwrap(), home);
+            assert_eq!(
+                resolve_documents_dir(&home, "~/MyCertificates").unwrap(),
+                home.join("MyCertificates")
+            );
+            let absolute = home.join("AbsoluteCerts");
+            assert_eq!(
+                resolve_documents_dir(&home, absolute.to_str().unwrap()).unwrap(),
+                absolute
+            );
+            assert!(resolve_documents_dir(&home, "relative/folder").is_err());
+
+            let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+            crate::database::create_tables(&pool).await.unwrap();
+            assert_eq!(load_documents_dir(&pool, &home).await.unwrap(), home.join("Certdex"));
+
+            let mut profile = complete_profile();
+            profile.documents_dir = "relative/folder".into();
+            assert!(save(&pool, &home, &profile).await.is_err());
+            profile.documents_dir = "~/CustomCerts".into();
+            save(&pool, &home, &profile).await.unwrap();
+            assert_eq!(
+                load_documents_dir(&pool, &home).await.unwrap(),
+                home.join("CustomCerts")
+            );
         });
     }
 }

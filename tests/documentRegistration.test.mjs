@@ -322,3 +322,34 @@ test("accepts PNG and JPG certificates and rejects unsupported extensions", asyn
   assert.equal(invoked, false);
   assert.equal(registerButton(rejectedView).props.disabled, true);
 });
+
+test("deletes a document after confirmation and cancels active editing", async () => {
+  const existing = {
+    id: 7, type: "course", title: "To Delete", role: null, issue_date: "2025-01-01",
+    start_date: null, end_date: null, workload_hours: 10, city: null, country: null,
+    validation_code: null, validation_url: null, organization: "IFSul", event: null,
+    people: [], tags: [],
+  };
+  let deletedId = null;
+  const view = createDocuments((command, args) => {
+    if (command === "list_documents") return Promise.resolve(deletedId ? [] : [existing]);
+    if (command === "list_academic_options") return Promise.resolve({ organizations: [], events: [], people: [], tags: [] });
+    if (command === "delete_document") {
+      deletedId = args.id;
+      return Promise.resolve();
+    }
+    throw new Error(command);
+  }, true);
+  view.find(() => false);
+  await new Promise(setImmediate);
+
+  view.find((node) => node.type === "button" && node.props["aria-label"] === "Edit To Delete").props.onClick();
+  assert.equal(titleInput(view).props.value, "To Delete");
+
+  view.find((node) => node.type === "button" && node.props["aria-label"] === "Delete To Delete").props.onClick();
+  assert.equal(deletedId, null);
+
+  await view.find((node) => node.type === "button" && node.props["aria-label"] === "Confirm delete To Delete").props.onClick();
+  assert.equal(deletedId, 7);
+  assert.equal(titleInput(view).props.value, "");
+});

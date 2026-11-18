@@ -33,10 +33,14 @@ pub(crate) async fn create_tables(pool: &SqlitePool) -> Result<(), sqlx::Error> 
     let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('profile')")
         .fetch_all(pool)
         .await?;
-    if !columns.iter().any(|column| column == "photo_path") {
-        sqlx::query("ALTER TABLE profile ADD COLUMN photo_path TEXT")
+    for column in ["photo_path", "documents_dir"] {
+        if !columns.iter().any(|existing| existing == column) {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE profile ADD COLUMN {column} TEXT"
+            )))
             .execute(pool)
             .await?;
+        }
     }
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS documents (
@@ -125,13 +129,14 @@ mod tests {
                 .unwrap();
             create_tables(&pool).await.unwrap();
             create_tables(&pool).await.unwrap();
-            let (name, photo): (String, Option<String>) =
-                sqlx::query_as("SELECT name, photo_path FROM profile WHERE id = 1")
+            let (name, photo, documents_dir): (String, Option<String>, Option<String>) =
+                sqlx::query_as("SELECT name, photo_path, documents_dir FROM profile WHERE id = 1")
                     .fetch_one(&pool)
                     .await
                     .unwrap();
             assert_eq!(name, "Existing");
             assert_eq!(photo, None);
+            assert_eq!(documents_dir, None);
         });
     }
 
