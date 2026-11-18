@@ -47,7 +47,6 @@ function Documents() {
   const [saving, setSaving] = useState(false);
   const [reading, setReading] = useState<PdfReading | null>(null);
   const [readingStatus, setReadingStatus] = useState("");
-  const [analysis, setAnalysis] = useState<DocumentAnalysis | null>(null);
   const [analysisStatus, setAnalysisStatus] = useState("");
   const analysisPending = analysisStatus === "Checking Ollama…" || analysisStatus === "Analyzing document…";
   const [documents, setDocuments] = useState<DocumentItem[] | null>(null);
@@ -111,7 +110,6 @@ function Documents() {
     setFileStatus("");
     setReading(null);
     setReadingStatus("");
-    setAnalysis(null);
     setAnalysisStatus("");
     if (editing === null) {
       editedFields.current.clear();
@@ -164,7 +162,6 @@ function Documents() {
           setAnalysisStatus("Analyzing document…");
           const analysisResult = await window.__TAURI__.core.invoke<DocumentAnalysis>("analyze_pdf_text", { text: result.text });
           if (selected === selection.current) {
-            setAnalysis(analysisResult);
             setFormValues((current) => applyDocumentAnalysis(current, editedFields.current as Set<keyof DocumentForm>, analysisResult));
             if (!editedFields.current.has("organization")) setOrganization(analysisResult.organization ?? "");
             if (!editedFields.current.has("event")) setAcademicEvent(analysisResult.event ?? "");
@@ -227,7 +224,6 @@ function Documents() {
       setFormValues(emptyDocumentForm);
       editedFields.current.clear();
       setReading(null);
-      setAnalysis(null);
       setEditing(null);
       setOrganization("");
       setAcademicEvent("");
@@ -257,7 +253,6 @@ function Documents() {
     setFileStatus("");
     setReading(null);
     setReadingStatus("");
-    setAnalysis(null);
     setAnalysisStatus("");
     editedFields.current = new Set([...Object.keys(emptyDocumentForm), "organization", "event"]);
     setFormValues({ type: document.type, title: document.title ?? "", role: document.role ?? "", issue_date: document.issue_date ?? "", start_date: document.start_date ?? "", end_date: document.end_date ?? "", workload_hours: document.workload_hours?.toString() ?? "", city: document.city ?? "", country: document.country ?? "", validation_code: document.validation_code ?? "", validation_url: document.validation_url ?? "" });
@@ -276,7 +271,6 @@ function Documents() {
     setFileName("");
     setReading(null);
     setReadingStatus("");
-    setAnalysis(null);
     setAnalysisStatus("");
     setFormValues(emptyDocumentForm);
     setOrganization("");
@@ -340,16 +334,18 @@ function Documents() {
       <section className="documents-list" aria-labelledby="documents-list-heading">
         <h2 id="documents-list-heading">Registered documents</h2>
         {optionsError && <p role="alert">{optionsError}</p>}
-        <label className="document-filter"><span>Search documents</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
-        <label className="document-filter">
-          <span>Filter by type</span>
-          <select value={filter} onChange={(event) => setFilter(event.target.value)}>
-            <option value="">All types</option>
-            {documentTypes.map((type) => <option key={type} value={type}>{type[0].toUpperCase() + type.slice(1)}</option>)}
-          </select>
-        </label>
-        <label className="document-filter"><span>Filter by year</span><select value={year} onChange={(event) => setYear(event.target.value)}><option value="">All years</option>{years.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
-        <label className="document-filter"><span>Filter by tag</span><select value={tag} onChange={(event) => setTag(event.target.value)}><option value="">All tags</option>{options.tags.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+        <div className="document-filters">
+          <label className="document-filter"><span>Search documents</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
+          <label className="document-filter">
+            <span>Filter by type</span>
+            <select value={filter} onChange={(event) => setFilter(event.target.value)}>
+              <option value="">All types</option>
+              {documentTypes.map((type) => <option key={type} value={type}>{type[0].toUpperCase() + type.slice(1)}</option>)}
+            </select>
+          </label>
+          <label className="document-filter"><span>Filter by year</span><select value={year} onChange={(event) => setYear(event.target.value)}><option value="">All years</option>{years.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+          <label className="document-filter"><span>Filter by tag</span><select value={tag} onChange={(event) => setTag(event.target.value)}><option value="">All tags</option>{options.tags.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+        </div>
         {documents && !listError && <p>Total workload: {totalHours} hours</p>}
         {documents && !listError && (
           <div className="profile-actions">
@@ -438,6 +434,8 @@ function Documents() {
           </div>
           <label className="profile-field-wide"><span>{editing === null ? "Document file (PDF, PNG, JPG)" : "Replace file (optional)"}</span><input ref={fileInput} type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" onChange={handleFileChange} /></label>
         </fieldset>
+        {readingStatus && <p role="status">{readingStatus}</p>}
+        {reading?.warning && <p role="alert">{reading.warning}</p>}
         {analysisStatus && <p role="status">{analysisStatus}</p>}
         <div className="document-file" aria-live="polite">
           {fileName && <p>Selected file: {fileName}</p>}
@@ -448,21 +446,6 @@ function Documents() {
           {editing !== null && <button type="button" disabled={saving} onClick={cancelEdit}>Cancel</button>}
         </div>
       </form>
-      <section className="pdf-debug" aria-labelledby="pdf-debug-heading">
-        <h2 id="pdf-debug-heading">Extracted text (debug)</h2>
-        {readingStatus && <p role="status">{readingStatus}</p>}
-        {reading && <>
-          <p>Source: {reading.source} · OCR used: {reading.used_ocr ? "yes" : "no"}</p>
-          {reading.warning && <p role="alert">{reading.warning}</p>}
-          {!reading.has_sufficient_text && <p>The extracted text contains fewer than 20 non-whitespace characters.</p>}
-          <pre>{reading.text || "No text extracted."}</pre>
-        </>}
-        {!reading && !readingStatus && <p>Select a PDF, PNG, or JPG to inspect its extracted text.</p>}
-        {reading && <>
-          <h2>Document analysis (debug)</h2>
-          {analysis && <pre>{JSON.stringify(analysis, null, 2)}</pre>}
-        </>}
-      </section>
     </section>
   );
 }

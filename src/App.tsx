@@ -50,7 +50,10 @@ function App() {
         <div className="sidebar-photo">
           {photoUrl ? <img src={photoUrl} alt="Profile" /> : <span aria-label="No profile photo">●</span>}
         </div>
-        <div className="brand">Certificates</div>
+        <div className="brand">
+          <img src="/certdex-logo.svg" alt="" className="brand-logo" />
+          <span>Certdex</span>
+        </div>
         <nav aria-label="Main navigation">
           <button
             type="button"
