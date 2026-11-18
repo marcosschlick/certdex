@@ -353,3 +353,38 @@ test("deletes a document after confirmation and cancels active editing", async (
   assert.equal(deletedId, 7);
   assert.equal(titleInput(view).props.value, "");
 });
+
+test("generates PDF report for filtered documents and disables when none match", async () => {
+  const base = { type: "course", role: null, issue_date: "2025-01-01", start_date: null, end_date: null, city: null, country: null, organization: "IFSul", event: null, people: [], tags: [], workload_hours: 3 };
+  let savedPayload = null;
+  const view = createDocuments((command, args) => {
+    if (command === "list_documents") return Promise.resolve([{ ...base, id: 1, title: "Rust" }, { ...base, id: 2, title: "Math", workload_hours: 5 }]);
+    if (command === "list_academic_options") return Promise.resolve({ organizations: [], events: [], people: [], tags: [] });
+    if (command === "get_profile") return Promise.resolve({ name: "Ada", email: "ada@example.com", phone: "123", city: "Pelotas", state: "RS", country: "Brazil" });
+    if (command === "save_report_pdf") {
+      savedPayload = args;
+      return Promise.resolve("/home/user/Certdex/reports/certdex-report.pdf");
+    }
+    throw new Error(command);
+  }, true);
+  view.find(() => false);
+  await new Promise(setImmediate);
+
+  const reportButton = () => view.find((node) => node.type === "button" && node.props.children === "Generate PDF report");
+  assert.equal(reportButton().props.disabled, false);
+
+  view.find((node) => node.type === "input" && node.props.type === "search").props.onChange({ target: { value: "nonexistent" } });
+  assert.equal(reportButton().props.disabled, true);
+
+  view.find((node) => node.type === "input" && node.props.type === "search").props.onChange({ target: { value: "rust" } });
+  assert.equal(reportButton().props.disabled, false);
+
+  await reportButton().props.onClick();
+  assert.ok(Array.isArray(savedPayload.data));
+  assert.ok(savedPayload.data.length > 0);
+  assert.match(savedPayload.filename, /^certdex-report-\d{4}-\d{2}-\d{2}\.pdf$/);
+  assert.equal(
+    view.find((node) => node.type === "p" && node.props.role === "status" && String(node.props.children).startsWith("Report saved:")).props.children,
+    "Report saved: /home/user/Certdex/reports/certdex-report.pdf",
+  );
+});

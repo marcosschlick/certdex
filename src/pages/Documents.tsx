@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { applyDocumentAnalysis, emptyDocumentForm, matchesDocumentFilters, type DocumentAnalysis, type DocumentForm } from "../documentForm";
+import { buildReportData, generateReportPdf, type ReportProfile } from "../report";
 
 const documentTypes = [
   "certificate", "course", "article", "proceedings", "presentation", "event",
@@ -54,6 +55,9 @@ function Documents() {
   const [optionsError, setOptionsError] = useState("");
   const [openError, setOpenError] = useState("");
   const [deleteError, setDeleteError] = useState("");
+  const [generatingReport, setGeneratingReport] = useState(false);
+  const [reportStatus, setReportStatus] = useState("");
+  const [reportError, setReportError] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [filter, setFilter] = useState("");
@@ -308,6 +312,28 @@ function Documents() {
     }
   }
 
+  async function generateReport() {
+    if (generatingReport || !visibleDocuments || visibleDocuments.length === 0) return;
+    setGeneratingReport(true);
+    setReportStatus("");
+    setReportError("");
+    try {
+      const profile = await window.__TAURI__.core.invoke<ReportProfile>("get_profile");
+      const report = buildReportData(profile, visibleDocuments, { search, type: filter, year, tag });
+      const pdfBytes = generateReportPdf(report);
+      const filename = `certdex-report-${new Date().toISOString().slice(0, 10)}.pdf`;
+      const path = await window.__TAURI__.core.invoke<string>("save_report_pdf", {
+        data: Array.from(pdfBytes),
+        filename,
+      });
+      setReportStatus(`Report saved: ${path}`);
+    } catch (error) {
+      setReportError(typeof error === "string" ? error : "Could not generate the PDF report.");
+    } finally {
+      setGeneratingReport(false);
+    }
+  }
+
   return (
     <section className="profile">
       <h1>Documents</h1>
@@ -325,6 +351,19 @@ function Documents() {
         <label className="document-filter"><span>Filter by year</span><select value={year} onChange={(event) => setYear(event.target.value)}><option value="">All years</option>{years.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
         <label className="document-filter"><span>Filter by tag</span><select value={tag} onChange={(event) => setTag(event.target.value)}><option value="">All tags</option>{options.tags.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
         {documents && !listError && <p>Total workload: {totalHours} hours</p>}
+        {documents && !listError && (
+          <div className="profile-actions">
+            <button
+              type="button"
+              disabled={generatingReport || !visibleDocuments?.length}
+              onClick={generateReport}
+            >
+              {generatingReport ? "Generating PDF…" : "Generate PDF report"}
+            </button>
+            {reportStatus && <p role="status">{reportStatus}</p>}
+            {reportError && <p role="alert">{reportError}</p>}
+          </div>
+        )}
         {listError ? <p role="alert">{listError}</p> : documents === null ? <p role="status">Loading documents…</p> : (
           visibleDocuments?.length === 0 ? (
             <p>No documents found.</p>

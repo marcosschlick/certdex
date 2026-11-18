@@ -193,15 +193,7 @@ async fn document_file_path(
     Ok(path)
 }
 
-#[tauri::command]
-pub(crate) async fn open_document(
-    app: tauri::AppHandle,
-    pool: State<'_, SqlitePool>,
-    id: i64,
-) -> Result<(), String> {
-    let home = app.path().home_dir().map_err(|error| error.to_string())?;
-    let documents_dir = crate::profile::load_documents_dir(&pool, &home).await?;
-    let path = document_file_path(&pool, &documents_dir, id).await?;
+fn open_file_in_os(path: &Path) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     let program = "explorer";
     #[cfg(target_os = "macos")]
@@ -213,6 +205,56 @@ pub(crate) async fn open_document(
         .spawn()
         .map_err(|error| error.to_string())?;
     Ok(())
+}
+
+fn sanitize_report_filename(filename: &str) -> String {
+    let base = Path::new(filename)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .trim();
+    let cleaned: String = base
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') { ch } else { '-' })
+        .collect();
+    let trimmed = cleaned.trim_matches(['.', '-']);
+    if trimmed.is_empty() {
+        return "certdex-report.pdf".to_string();
+    }
+    if trimmed.to_ascii_lowercase().ends_with(".pdf") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}.pdf")
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn save_report_pdf(
+    app: tauri::AppHandle,
+    pool: State<'_, SqlitePool>,
+    data: Vec<u8>,
+    filename: String,
+) -> Result<String, String> {
+    let home = app.path().home_dir().map_err(|error| error.to_string())?;
+    let documents_dir = crate::profile::load_documents_dir(&pool, &home).await?;
+    let reports_dir = documents_dir.join("reports");
+    fs::create_dir_all(&reports_dir).map_err(|error| error.to_string())?;
+    let path = reports_dir.join(sanitize_report_filename(&filename));
+    fs::write(&path, data).map_err(|error| error.to_string())?;
+    open_file_in_os(&path)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub(crate) async fn open_document(
+    app: tauri::AppHandle,
+    pool: State<'_, SqlitePool>,
+    id: i64,
+) -> Result<(), String> {
+    let home = app.path().home_dir().map_err(|error| error.to_string())?;
+    let documents_dir = crate::profile::load_documents_dir(&pool, &home).await?;
+    let path = document_file_path(&pool, &documents_dir, id).await?;
+    open_file_in_os(&path)
 }
 
 #[tauri::command]

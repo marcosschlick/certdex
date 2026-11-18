@@ -34,6 +34,26 @@ export function createComponent(name, invoke, runEffects = false, props = {}) {
   vm.runInNewContext(source("../src/documentForm.ts"), { exports: formModule.exports });
   const profileModule = { exports: {} };
   vm.runInNewContext(source("../src/profile.ts"), { exports: profileModule.exports });
+  const reportModule = { exports: {} };
+  const jsPdfStub = {
+    jsPDF: class {
+      internal = { pageSize: { getWidth: () => 210, getHeight: () => 297 } };
+      setFont() {}
+      setFontSize() {}
+      splitTextToSize(text) { return [text]; }
+      text() {}
+      line() {}
+      addPage() {}
+      output() { return new Uint8Array([37, 80, 68, 70]).buffer; }
+    },
+  };
+  vm.runInNewContext(source("../src/report.ts"), {
+    exports: reportModule.exports,
+    require(name) {
+      if (name === "jspdf") return jsPdfStub;
+      throw new Error(`Unexpected import: ${name}`);
+    },
+  });
   const componentModule = { exports: {} };
   const context = {
     exports: componentModule.exports,
@@ -42,6 +62,7 @@ export function createComponent(name, invoke, runEffects = false, props = {}) {
       if (name === "react/jsx-runtime") return { jsx, jsxs: jsx, Fragment: "fragment" };
       if (name === "../documentForm") return formModule.exports;
       if (name === "../profile") return profileModule.exports;
+      if (name === "../report") return reportModule.exports;
       throw new Error(`Unexpected import: ${name}`);
     },
     window: { __TAURI__: { core: { invoke } } },

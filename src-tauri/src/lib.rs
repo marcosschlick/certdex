@@ -31,6 +31,7 @@ pub fn run() {
             ollama::analyze_pdf_text,
             document::open_document,
             document::reveal_document,
+            document::save_report_pdf,
             search::search_documents_chat
         ])
         .setup(|app| {
