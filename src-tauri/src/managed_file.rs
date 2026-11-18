@@ -4,10 +4,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(crate) fn read_managed_file(
-    directory: &Path,
+pub(crate) fn resolve_managed_file(
+    roots: &[&Path],
     stored_path: Option<&str>,
-) -> Result<Option<(PathBuf, Vec<u8>)>, String> {
+) -> Result<Option<PathBuf>, String> {
     let Some(stored_path) = stored_path else {
         return Ok(None);
     };
@@ -16,12 +16,26 @@ pub(crate) fn read_managed_file(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.to_string()),
     };
-    let directory = directory
-        .canonicalize()
-        .map_err(|error| error.to_string())?;
-    if !path.starts_with(directory) || !path.is_file() {
+    if !path.is_file() {
         return Err("Invalid managed file path.".into());
     }
+    let allowed = roots
+        .iter()
+        .filter_map(|root| root.canonicalize().ok())
+        .any(|root| path.starts_with(root));
+    if !allowed {
+        return Err("Invalid managed file path.".into());
+    }
+    Ok(Some(path))
+}
+
+pub(crate) fn read_managed_file(
+    roots: &[&Path],
+    stored_path: Option<&str>,
+) -> Result<Option<(PathBuf, Vec<u8>)>, String> {
+    let Some(path) = resolve_managed_file(roots, stored_path)? else {
+        return Ok(None);
+    };
     let data = fs::read(&path).map_err(|error| error.to_string())?;
     Ok(Some((path, data)))
 }
@@ -37,12 +51,12 @@ pub(crate) fn discard_file(path: &Path, error: String) -> String {
 pub(crate) async fn commit_file_change(
     transaction: Transaction<'_, Sqlite>,
     new_path: &Path,
-    previous: Option<&(PathBuf, Vec<u8>)>,
+    previous_path: Option<&Path>,
 ) -> Result<(), String> {
     if let Err(error) = transaction.commit().await {
         return Err(discard_file(new_path, error.to_string()));
     }
-    if let Some((path, _)) = previous
+    if let Some(path) = previous_path
         && let Err(error) = fs::remove_file(path)
         && error.kind() != std::io::ErrorKind::NotFound
     {
@@ -81,7 +95,7 @@ mod tests {
             let new = root.join("new.pdf");
             fs::write(&old, b"original").unwrap();
             fs::write(&new, b"replacement").unwrap();
-            let previous = read_managed_file(&root, old.to_str()).unwrap().unwrap();
+            let previous = resolve_managed_file(&[&root], old.to_str()).unwrap().unwrap();
             fs::write(&old, b"original updated after reading").unwrap();
             let mut transaction = pool.begin().await.unwrap();
             sqlx::query("INSERT INTO child VALUES (999)")
@@ -89,7 +103,7 @@ mod tests {
                 .await
                 .unwrap();
             assert!(
-                commit_file_change(transaction, &new, Some(&previous))
+                commit_file_change(transaction, &new, Some(previous.as_path()))
                     .await
                     .is_err()
             );
@@ -102,7 +116,8 @@ mod tests {
                     .unwrap(),
                 0
             );
-            assert!(read_managed_file(&root.join("other"), old.to_str()).is_err());
+            let other = root.join("other");
+            assert!(resolve_managed_file(&[&other], old.to_str()).is_err());
             fs::remove_dir_all(root).unwrap();
         });
     }
@@ -124,12 +139,12 @@ mod tests {
                 .execute(&pool)
                 .await
                 .unwrap();
-            let previous = (root.join("old"), b"old data".to_vec());
-            fs::create_dir(&previous.0).unwrap();
+            let previous = root.join("old");
+            fs::create_dir(&previous).unwrap();
             let next = root.join("new");
             fs::write(&next, b"new data").unwrap();
             sqlx::query("INSERT INTO changes VALUES (?)")
-                .bind(previous.0.to_string_lossy().as_ref())
+                .bind(previous.to_string_lossy().as_ref())
                 .execute(&pool)
                 .await
                 .unwrap();
@@ -139,13 +154,13 @@ mod tests {
                 .execute(&mut *transaction)
                 .await
                 .unwrap();
-            let error = commit_file_change(transaction, &next, Some(&previous))
+            let error = commit_file_change(transaction, &next, Some(previous.as_path()))
                 .await
                 .unwrap_err();
             assert!(error.contains("Changes were saved"));
             assert!(error.contains("previous file could not be removed"));
             assert_eq!(fs::read(&next).unwrap(), b"new data");
-            assert!(previous.0.is_dir());
+            assert!(previous.is_dir());
             assert_eq!(
                 sqlx::query_scalar::<_, String>("SELECT file_path FROM changes")
                     .fetch_one(&pool)

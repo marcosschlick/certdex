@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 
 type ChatDocumentResult = {
   id: number;
@@ -33,6 +33,7 @@ function Chat() {
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState("");
   const [actionError, setActionError] = useState("");
+  const nextMessageId = useRef(1);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -40,8 +41,8 @@ function Chat() {
     if (!trimmed || searching) return;
     setError("");
     setActionError("");
-    const userId = Date.now();
-    setMessages((previous) => [...previous, { id: userId, role: "user", text: trimmed }]);
+    const userMessageId = nextMessageId.current++;
+    setMessages((previous) => [...previous, { id: userMessageId, role: "user", text: trimmed }]);
     setQuery("");
     setSearching(true);
     try {
@@ -49,10 +50,11 @@ function Chat() {
         "search_documents_chat",
         { query: trimmed },
       );
+      const assistantMessageId = nextMessageId.current++;
       setMessages((previous) => [
         ...previous,
         {
-          id: userId + 1,
+          id: assistantMessageId,
           role: "assistant",
           text: response.reply,
           results: response.results,

@@ -46,7 +46,8 @@ export type ReportData = {
 };
 
 export function calculateTotalWorkload(documents: readonly Pick<ReportDocument, "workload_hours">[]): number {
-  return documents.reduce((sum, document) => sum + (document.workload_hours ?? 0), 0);
+  const total = documents.reduce((sum, document) => sum + (document.workload_hours ?? 0), 0);
+  return Math.round(total * 100) / 100;
 }
 
 export function selectReportDocuments(documents: readonly ReportDocument[]): ReportRow[] {
@@ -176,7 +177,8 @@ export function generateReportPdf(report: ReportData, generatedDate = new Date()
   ensureSpace(10);
   doc.line(margin, y, pageWidth - margin, y);
   y += 6;
-  writeWrapped(`Total workload: ${report.totalHours} hours (${report.documents.length} documents)`, 11, "bold", 0);
+  const noun = report.documents.length === 1 ? "document" : "documents";
+  writeWrapped(`Total workload: ${report.totalHours} hours (${report.documents.length} ${noun})`, 11, "bold", 0);
 
   return new Uint8Array(doc.output("arraybuffer"));
 }

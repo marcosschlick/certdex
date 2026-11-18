@@ -223,8 +223,10 @@ fn encode_embedding(values: &[f32]) -> Vec<u8> {
 
 fn decode_embedding(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| f32::from_le_bytes(*chunk))
         .collect()
 }
 
@@ -632,6 +634,58 @@ mod tests {
                 .unwrap();
             assert!(response.results.is_empty());
             assert_eq!(response.reply, "No documents found matching \"quantum\".");
+        });
+    }
+
+    #[test]
+    fn semantic_only_matches_and_respects_similarity_threshold_and_limit() {
+        tauri::async_runtime::block_on(async {
+            let pool = setup_pool().await;
+            let mut ids = Vec::new();
+            for index in 0..12 {
+                let id = insert_doc(
+                    &pool,
+                    "course",
+                    &format!("Topic {index}"),
+                    None,
+                    &format!("/docs/topic-{index}.pdf"),
+                    "Completely unrelated keywords",
+                )
+                .await;
+                ids.push(id);
+            }
+            let low_id = insert_doc(
+                &pool,
+                "course",
+                "Low Similarity",
+                None,
+                "/docs/low.pdf",
+                "Unrelated",
+            )
+            .await;
+
+            for (index, id) in ids.iter().enumerate() {
+                let weight = 1.0 - (index as f32) * 0.02;
+                save_document_embedding(&pool, *id, embedding_model(), &[weight, 0.2, 0.0])
+                    .await
+                    .unwrap();
+            }
+            save_document_embedding(&pool, low_id, embedding_model(), &[0.0, 1.0, 0.0])
+                .await
+                .unwrap();
+
+            let embed_url = mock_embed_server(vec![vec![1.0, 0.0, 0.0]]);
+            let response = search_documents(&pool, &embed_url, "conceptual inquiry")
+                .await
+                .unwrap();
+            assert!(response.used_embeddings);
+            assert_eq!(response.results.len(), MAX_RESULTS);
+            assert!(response.results.iter().all(|item| item.matched_by == "semantic"));
+            assert!(!response.results.iter().any(|item| item.id == low_id));
+
+            assert_eq!(cosine_similarity(&[], &[1.0]), 0.0);
+            assert_eq!(cosine_similarity(&[1.0], &[1.0, 0.0]), 0.0);
+            assert_eq!(cosine_similarity(&[0.0, 0.0], &[1.0, 0.0]), 0.0);
         });
     }
 }

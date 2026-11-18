@@ -14,6 +14,7 @@ function deferred() {
 const pdf = (name) => ({ name, arrayBuffer: async () => new Uint8Array([1]).buffer });
 const fileInput = (view) => view.find((node) => node.type === "input" && node.props.type === "file");
 const registerButton = (view) => view.find((node) => node.type === "button" && node.props.type === "submit");
+const typeSelect = (view) => view.find((node) => node.type === "select" && node.props.name === "type");
 const titleInput = (view) => view.find((node) => node.type === "input" && node.props.name === "title");
 const reading = { text: "Document text", source: "pdf_text", used_ocr: false, has_sufficient_text: true };
 
@@ -101,11 +102,12 @@ test("changing PDFs and successful registration clear document fields", async ()
   titleInput(view).props.onChange({ target: { name: "title", value: "First document" } });
   await fileInput(view).props.onChange({ target: { files: [pdf("second.pdf")] } });
   assert.equal(titleInput(view).props.value, "");
+  typeSelect(view).props.onChange({ target: { name: "type", value: "course" } });
   titleInput(view).props.onChange({ target: { name: "title", value: "Second document" } });
   const input = { value: "second.pdf" };
   fileInput(view).props.ref.current = input;
   const form = view.find((node) => node.type === "form");
-  await form.props.onSubmit({ preventDefault() {}, currentTarget: {} });
+  await form.props.onSubmit({ preventDefault() {} });
   assert.equal(titleInput(view).props.value, "");
   assert.equal(input.value, "");
   assert.equal(registerButton(view).props.disabled, true);
@@ -149,7 +151,8 @@ test("registration saves the current PDF reading without extracting it again", a
       throw new Error(command);
     });
     await fileInput(view).props.onChange({ target: { files: [pdf("document.pdf")] } });
-    await view.find((node) => node.type === "form").props.onSubmit({ preventDefault() {}, currentTarget: {} });
+    typeSelect(view).props.onChange({ target: { name: "type", value: "course" } });
+    await view.find((node) => node.type === "form").props.onSubmit({ preventDefault() {} });
     assert.equal(savedText, result.text);
     assert.equal(reads, 1);
   }
@@ -178,11 +181,12 @@ test("allows manual registration and replacement without text or AI calls", asyn
       await new Promise(setImmediate);
       if (editing) view.find((node) => node.props["aria-label"] === "Edit Existing").props.onClick();
       await fileInput(view).props.onChange({ target: { files: [pdf("manual.pdf")] } });
+      if (!editing) typeSelect(view).props.onChange({ target: { name: "type", value: "course" } });
       assert.equal(registerButton(view).props.disabled, false);
       assert.ok(view.find((node) => node.type === "p" && node.props.role === "status" && node.props.children === "Text could not be extracted. You can continue filling out the form manually."));
       assert.equal(calls.includes("check_ollama"), false);
       assert.equal(calls.includes("analyze_pdf_text"), false);
-      await view.find((node) => node.type === "form").props.onSubmit({ preventDefault() {}, currentTarget: {} });
+      await view.find((node) => node.type === "form").props.onSubmit({ preventDefault() {} });
       assert.equal(saved.command, editing ? "update_document" : "store_document");
       assert.equal(saved.args.document.extracted_text, "");
       assert.equal(saved.args.document.original_filename, "manual.pdf");
@@ -306,10 +310,11 @@ test("accepts PNG and JPG certificates and rejects unsupported extensions", asyn
     });
     await fileInput(view).props.onChange({ target: { files: [pdf(name)] } });
     assert.equal(registerButton(view).props.disabled, false);
-    await view.find((node) => node.type === "form").props.onSubmit({
-      preventDefault() {},
-      currentTarget: { type: "certificate", title: "Image certificate" },
-    });
+    typeSelect(view).props.onChange({ target: { name: "type", value: "certificate" } });
+    titleInput(view).props.onChange({ target: { name: "title", value: "Image certificate" } });
+    await view.find((node) => node.type === "form").props.onSubmit({ preventDefault() {} });
+    assert.equal(stored.document.document_type, "certificate");
+    assert.equal(stored.document.title, "Image certificate");
     assert.equal(stored.document.original_filename, name);
   }
 
@@ -387,4 +392,73 @@ test("generates PDF report for filtered documents and disables when none match",
     view.find((node) => node.type === "p" && node.props.role === "status" && String(node.props.children).startsWith("Report saved:")).props.children,
     "Report saved: /home/user/Certdex/reports/certdex-report.pdf",
   );
+});
+
+test("applies regex analysis when Ollama is unavailable without overwriting manual edits", async () => {
+  const view = createDocuments((command) => {
+    if (command === "hash_document") return Promise.resolve("hash");
+    if (command === "document_hash_exists") return Promise.resolve(false);
+    if (command === "read_selected_document") {
+      return Promise.resolve({
+        ...reading,
+        regex_analysis: {
+          type: null,
+          title: null,
+          role: null,
+          organization: null,
+          event: null,
+          issue_date: "2025-11-15",
+          start_date: null,
+          end_date: null,
+          workload_hours: 20.5,
+          city: null,
+          country: null,
+          validation_code: "CERT-123",
+          validation_url: "https://valida.example.org/CERT-123",
+        },
+      });
+    }
+    if (command === "check_ollama") return Promise.resolve("unavailable");
+    throw new Error(command);
+  });
+
+  await fileInput(view).props.onChange({ target: { files: [pdf("cert.pdf")] } });
+  assert.equal(view.find((node) => node.type === "input" && node.props.name === "issue_date").props.value, "2025-11-15");
+  assert.equal(view.find((node) => node.type === "input" && node.props.name === "workload_hours").props.value, "20.5");
+  assert.equal(view.find((node) => node.type === "input" && node.props.name === "validation_code").props.value, "CERT-123");
+  assert.equal(view.find((node) => node.type === "input" && node.props.name === "validation_url").props.value, "https://valida.example.org/CERT-123");
+  assert.equal(registerButton(view).props.disabled, false);
+});
+
+test("cancels editing and supports adding and removing people", async () => {
+  const existing = {
+    id: 9, type: "course", title: "Original", role: null, issue_date: "2025-01-01",
+    start_date: null, end_date: null, workload_hours: 8, city: null, country: null,
+    validation_code: null, validation_url: null, organization: null, event: null,
+    people: [{ name: "Ada", role: "Speaker" }], tags: [],
+  };
+  let updated;
+  const view = createDocuments((command, args) => {
+    if (command === "list_documents") return Promise.resolve([existing]);
+    if (command === "list_academic_options") return Promise.resolve({ organizations: [], events: [], people: [], tags: [] });
+    if (command === "update_document") { updated = args; return Promise.resolve(); }
+    throw new Error(command);
+  }, true);
+  view.find(() => false);
+  await new Promise(setImmediate);
+
+  view.find((node) => node.type === "button" && node.props["aria-label"] === "Edit Original").props.onClick();
+  assert.equal(titleInput(view).props.value, "Original");
+  view.find((node) => node.type === "button" && node.props.children === "Cancel").props.onClick();
+  assert.equal(titleInput(view).props.value, "");
+
+  view.find((node) => node.type === "button" && node.props["aria-label"] === "Edit Original").props.onClick();
+  view.find((node) => node.type === "button" && node.props.children === "Add person").props.onClick();
+  view.find((node) => node.type === "button" && node.props.children === "Remove").props.onClick();
+  const nameInput = view.find((node) => node.type === "input" && node.props.list === "people-options");
+  nameInput.props.onChange({ target: { value: "Grace" } });
+  const roleInput = view.find((node) => node.type === "div" && node.props.className === "person-row").props.children[1].props.children[1];
+  roleInput.props.onChange({ target: { value: "Organizer" } });
+  await view.find((node) => node.type === "form").props.onSubmit({ preventDefault() {} });
+  assert.deepEqual(JSON.parse(JSON.stringify(updated.document.people)), [{ name: "Grace", role: "Organizer" }]);
 });

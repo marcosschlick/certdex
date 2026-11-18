@@ -66,7 +66,6 @@ export function createComponent(name, invoke, runEffects = false, props = {}) {
       throw new Error(`Unexpected import: ${name}`);
     },
     window: { __TAURI__: { core: { invoke } } },
-    FormData: class { get(name) { return name === "type" ? "course" : null; } },
     Uint8Array,
   };
   vm.runInNewContext(source(`../src/pages/${name}.tsx`), context);

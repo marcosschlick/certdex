@@ -1,4 +1,4 @@
-use crate::managed_file::{commit_file_change, discard_file, read_managed_file};
+use crate::managed_file::{commit_file_change, discard_file, resolve_managed_file};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqlitePool};
 use std::{
@@ -177,7 +177,7 @@ async fn save_photo(root: &Path, pool: &SqlitePool, data: &[u8]) -> Result<(), S
             .await
             .map_err(|error| error.to_string())?
             .flatten();
-    let previous = read_managed_file(&directory, stored_path.as_deref())?;
+    let previous = resolve_managed_file(&[&directory], stored_path.as_deref())?;
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|error| error.to_string())?
@@ -212,7 +212,7 @@ async fn save_photo(root: &Path, pool: &SqlitePool, data: &[u8]) -> Result<(), S
             format!("Could not save profile photo path: {error}"),
         ));
     }
-    commit_file_change(transaction, &path, previous.as_ref()).await
+    commit_file_change(transaction, &path, previous.as_deref()).await
 }
 
 async fn load_photo(root: &Path, pool: &SqlitePool) -> Result<Option<ProfilePhoto>, String> {

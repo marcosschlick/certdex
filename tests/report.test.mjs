@@ -28,6 +28,13 @@ test("calculates total workload across documents including nulls and decimals", 
     ]),
     14.5,
   );
+  assert.equal(
+    calculateTotalWorkload([
+      { workload_hours: 1.1 },
+      { workload_hours: 2.2 },
+    ]),
+    3.3,
+  );
 });
 
 test("selects report document fields with fallbacks", () => {

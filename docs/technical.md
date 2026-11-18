@@ -11,18 +11,18 @@ The frontend communicates with the Rust backend through Tauri `invoke` commands 
 When you select a file, `src-tauri/src/pdf.rs`, `src-tauri/src/regex_extraction.rs`, `src-tauri/src/ollama.rs`, and `src-tauri/src/document_analysis.rs` process it in stages:
 
 ```text
-Selected file (PDF or image)
+Selected file (PDF, PNG, or JPG)
   -> validate format and compute file hash
   -> if PDF: run `pdftotext -enc UTF-8`
        -> if fewer than 20 non-whitespace characters or extraction warning:
             render pages with `pdftoppm -png`
             run `tesseract <page> stdout -l por+eng+spa --psm 1`
-  -> if image: normalize orientation and run `tesseract`
+  -> if image: normalize EXIF orientation and run `tesseract` (`--psm 1`)
   -> extracted text
-       -> regex extractor (`regex_extraction.rs`):
+       -> regex extractor (`regex_extraction.rs`, returned immediately with extracted text):
             issue_date, start_date, end_date, workload_hours,
             validation_code, validation_url
-       -> Ollama `qwen3:1.7b` (`ollama.rs`):
+       -> Ollama `qwen3:1.7b` (`ollama.rs`, when available):
             type, title, role, organization, event
   -> `combine_analysis` merges regex and LLM outputs into `DocumentAnalysis`
 ```

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { applyDocumentAnalysis, emptyDocumentForm, matchesDocumentFilters, type DocumentAnalysis, type DocumentForm } from "../documentForm";
-import { buildReportData, generateReportPdf, type ReportProfile } from "../report";
+import { buildReportData, calculateTotalWorkload, generateReportPdf, type ReportProfile } from "../report";
 
 const documentTypes = [
   "certificate", "course", "article", "proceedings", "presentation", "event",
@@ -34,6 +34,7 @@ type PdfReading = {
   used_ocr: boolean;
   has_sufficient_text: boolean;
   warning: string | null;
+  regex_analysis?: DocumentAnalysis | null;
 };
 
 
@@ -145,6 +146,9 @@ function Documents() {
           setReadingStatus("");
           setFile(file);
           setReady(true);
+          if (result.text.trim() && result.regex_analysis) {
+            setFormValues((current) => applyDocumentAnalysis(current, editedFields.current as Set<keyof DocumentForm>, result.regex_analysis ?? null));
+          }
         }
         if (selected !== selection.current) return;
         if (!result.text.trim()) {
@@ -184,19 +188,19 @@ function Documents() {
     selection.current += 1;
     setReadingStatus("");
     setAnalysisStatus("");
-    const form = new FormData(event.currentTarget);
-    const value = (name: string) => String(form.get(name) || "") || null;
+    const value = (field: keyof DocumentForm) => formValues[field].trim() || null;
+    const workload = value("workload_hours");
     setSaving(true);
     setFileStatus("Saving file…");
     try {
       const document = {
-          document_type: form.get("type"),
+          document_type: formValues.type,
           title: value("title"),
           role: value("role"),
           issue_date: value("issue_date"),
           start_date: value("start_date"),
           end_date: value("end_date"),
-          workload_hours: value("workload_hours") === null ? null : Number(value("workload_hours")),
+          workload_hours: workload === null ? null : Number(workload),
           city: value("city"),
           country: value("country"),
           validation_code: value("validation_code"),
@@ -241,7 +245,7 @@ function Documents() {
 
   const visibleDocuments = documents?.filter((document) => matchesDocumentFilters(document, search, filter, year, tag));
   const years = [...new Set((documents ?? []).map((document) => (document.issue_date || document.start_date || document.end_date || "").slice(0, 4)).filter(Boolean))].sort().reverse();
-  const totalHours = visibleDocuments?.reduce((sum, document) => sum + (document.workload_hours ?? 0), 0) ?? 0;
+  const totalHours = calculateTotalWorkload(visibleDocuments ?? []);
 
   function editDocument(document: DocumentItem) {
     selection.current += 1;
@@ -426,11 +430,11 @@ function Documents() {
           <div className="profile-field-wide">
             <p>People</p>
             {people.map((person, index) => <div className="person-row" key={index}>
-              <label><span>Name</span><input list="people-options" value={person.name} required onChange={(event) => setPeople(people.map((item, i) => i === index ? { ...item, name: event.target.value } : item))} /></label>
-              <label><span>Role</span><input value={person.role} required onChange={(event) => setPeople(people.map((item, i) => i === index ? { ...item, role: event.target.value } : item))} /></label>
-              <button type="button" className="open-pdf" onClick={() => setPeople(people.filter((_, i) => i !== index))}>Remove</button>
+              <label><span>Name</span><input list="people-options" value={person.name} required onChange={(event) => setPeople((current) => current.map((item, i) => i === index ? { ...item, name: event.target.value } : item))} /></label>
+              <label><span>Role</span><input value={person.role} required onChange={(event) => setPeople((current) => current.map((item, i) => i === index ? { ...item, role: event.target.value } : item))} /></label>
+              <button type="button" className="open-pdf" onClick={() => setPeople((current) => current.filter((_, i) => i !== index))}>Remove</button>
             </div>)}
-            <button type="button" className="open-pdf" onClick={() => setPeople([...people, { name: "", role: "" }])}>Add person</button>
+            <button type="button" className="open-pdf" onClick={() => setPeople((current) => [...current, { name: "", role: "" }])}>Add person</button>
           </div>
           <label className="profile-field-wide"><span>{editing === null ? "Document file (PDF, PNG, JPG)" : "Replace file (optional)"}</span><input ref={fileInput} type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" onChange={handleFileChange} /></label>
         </fieldset>

@@ -97,3 +97,40 @@ test("chat renders fixed empty reply and error feedback", async () => {
   const alert = chat.find((node) => node.props?.role === "alert");
   assert.equal(collectText(alert), "Search failed.");
 });
+
+test("chat shows FTS5 mode indicator and action errors", async () => {
+  const invoke = async (command) => {
+    if (command === "search_documents_chat") {
+      return {
+        reply: 'Found 1 document matching "rust":',
+        used_embeddings: false,
+        results: [
+          {
+            id: 1,
+            title: "Rust Workshop",
+            document_type: "course",
+            organization: "IFSul",
+            issue_date: "2025-05-10",
+            file_path: "/tmp/rust.pdf",
+            score: 1,
+            matched_by: "keyword",
+          },
+        ],
+      };
+    }
+    if (command === "open_document") throw "File unavailable.";
+    return null;
+  };
+
+  const chat = createComponent("Chat", invoke);
+  chat.find((node) => node.type === "input").props.onChange({ target: { value: "rust" } });
+  await chat.find((node) => node.type === "form").props.onSubmit({ preventDefault() {} });
+  await flush();
+
+  const mode = chat.find((node) => node.props?.className === "chat-mode");
+  assert.equal(collectText(mode), "Keyword search (FTS5)");
+
+  await chat.find((node) => node.props?.className === "chat-action-open").props.onClick();
+  const alert = chat.find((node) => node.props?.role === "alert");
+  assert.equal(collectText(alert), "File unavailable.");
+});

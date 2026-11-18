@@ -1,3 +1,5 @@
+use crate::document_analysis::{DocumentAnalysis, LlmDocumentAnalysis, combine_analysis};
+use crate::regex_extraction::extract_with_regex;
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, metadata::Orientation};
 use std::{
     fs,
@@ -14,6 +16,25 @@ pub struct ExtractedText {
     pub source: &'static str,
     pub used_ocr: bool,
     pub warning: Option<String>,
+    pub regex_analysis: Option<DocumentAnalysis>,
+}
+
+fn build_extracted_text(
+    text: String,
+    source: &'static str,
+    used_ocr: bool,
+    warning: Option<String>,
+) -> ExtractedText {
+    let regex_analysis = (!text.trim().is_empty())
+        .then(|| combine_analysis(extract_with_regex(&text), LlmDocumentAnalysis::default()));
+    ExtractedText {
+        has_sufficient_text: has_sufficient_text(&text),
+        text,
+        source,
+        used_ocr,
+        warning,
+        regex_analysis,
+    }
 }
 
 pub fn extract_text_with_quality(path: &Path) -> Result<ExtractedText, String> {
@@ -56,13 +77,12 @@ fn extract_with_ocr(
             }
         }
     };
-    Ok(ExtractedText {
-        has_sufficient_text: has_sufficient_text(&text),
+    Ok(build_extracted_text(
         text,
-        source: if used_ocr { "ocr" } else { "pdf_text" },
+        if used_ocr { "ocr" } else { "pdf_text" },
         used_ocr,
-        warning: (!warnings.is_empty()).then(|| warnings.join(" ")),
-    })
+        (!warnings.is_empty()).then(|| warnings.join(" ")),
+    ))
 }
 
 fn extract_ocr(path: &Path) -> Result<String, String> {
@@ -119,7 +139,7 @@ fn read_pdf(data: &[u8]) -> Result<ExtractedText, String> {
     with_pdf_file(data, extract_text_with_quality)
 }
 
-pub(crate) async fn validate_pdf(data: &[u8]) -> Result<(), String> {
+async fn validate_pdf(data: &[u8]) -> Result<(), String> {
     let data = data.to_vec();
     tauri::async_runtime::spawn_blocking(move || {
         with_pdf_file(&data, |path| extract_text(path).map(|_| ()))
@@ -200,20 +220,13 @@ fn read_image(data: &[u8], tesseract: &Path) -> Result<ExtractedText, String> {
         ));
     }
     Ok(match ocr_result {
-        Ok(text) => ExtractedText {
-            has_sufficient_text: has_sufficient_text(&text),
-            text,
-            source: "ocr",
-            used_ocr: true,
-            warning: None,
-        },
-        Err(error) => ExtractedText {
-            has_sufficient_text: false,
-            text: String::new(),
-            source: "ocr",
-            used_ocr: false,
-            warning: Some(format!("OCR failed: {error}")),
-        },
+        Ok(text) => build_extracted_text(text, "ocr", true, None),
+        Err(error) => build_extracted_text(
+            String::new(),
+            "ocr",
+            false,
+            Some(format!("OCR failed: {error}")),
+        ),
     })
 }
 
@@ -643,8 +656,26 @@ mod tests {
         assert!(!failed.used_ocr);
         assert!(!failed.has_sufficient_text);
         assert!(failed.text.is_empty());
+        assert!(failed.regex_analysis.is_none());
         assert!(failed.warning.unwrap().contains("OCR failed"));
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn populates_regex_analysis_only_when_extracted_text_is_non_empty() {
+        let with_fields = extract_with_ocr(
+            "Emitido em 10/05/2025. Carga horária: 16h.".into(),
+            None,
+            || Ok(String::new()),
+        )
+        .unwrap();
+        let regex = with_fields.regex_analysis.unwrap();
+        assert_eq!(regex.issue_date.as_deref(), Some("2025-05-10"));
+        assert_eq!(regex.workload_hours, Some(16.0));
+        assert_eq!(regex.title, None);
+
+        let empty = extract_with_ocr("   ".into(), None, || Ok(String::new())).unwrap();
+        assert!(empty.regex_analysis.is_none());
     }
 }

@@ -59,10 +59,6 @@ fn truncate_chars(text: &str, max_chars: usize) -> &str {
     }
 }
 
-pub async fn generate_embedding(text: &str) -> Result<Vec<f32>, String> {
-    generate_embedding_at(EMBED_URL, text).await
-}
-
 pub(crate) async fn generate_embedding_at(url: &str, text: &str) -> Result<Vec<f32>, String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -98,7 +94,7 @@ pub(crate) async fn generate_embedding_at(url: &str, text: &str) -> Result<Vec<f
     Ok(embedding)
 }
 
-pub async fn analyze_document(text: &str) -> Result<DocumentAnalysis, String> {
+async fn analyze_document(text: &str) -> Result<DocumentAnalysis, String> {
     analyze_at("http://localhost:11434/api/chat", text).await
 }
 
@@ -178,13 +174,38 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
 
+    fn read_http_body(stream: &mut std::net::TcpStream) -> Option<serde_json::Value> {
+        let mut bytes = Vec::new();
+        let mut buffer = [0; 4096];
+        loop {
+            let count = stream.read(&mut buffer).unwrap();
+            assert!(count > 0);
+            bytes.extend_from_slice(&buffer[..count]);
+            if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                let header = String::from_utf8_lossy(&bytes[..end]);
+                let length: usize = header
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length: ")
+                            .map(|value| value.parse().unwrap())
+                    })
+                    .unwrap_or(0);
+                if bytes.len() >= end + 4 + length {
+                    return (length > 0).then(|| {
+                        serde_json::from_slice(&bytes[end + 4..end + 4 + length]).unwrap()
+                    });
+                }
+            }
+        }
+    }
+
     fn respond(body: &'static str) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0; 1024];
-            assert!(stream.read(&mut request).unwrap() > 0);
+            read_http_body(&mut stream);
             write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
         });
         format!("http://{address}/api/tags")
@@ -224,30 +245,7 @@ mod tests {
         let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut bytes = Vec::new();
-            let mut buffer = [0; 4096];
-            loop {
-                let count = stream.read(&mut buffer).unwrap();
-                assert!(count > 0);
-                bytes.extend_from_slice(&buffer[..count]);
-                if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
-                    let header = String::from_utf8_lossy(&bytes[..end]);
-                    let length: usize = header
-                        .lines()
-                        .find_map(|line| {
-                            line.to_ascii_lowercase()
-                                .strip_prefix("content-length: ")
-                                .map(|value| value.parse().unwrap())
-                        })
-                        .unwrap();
-                    if bytes.len() >= end + 4 + length {
-                        let body: serde_json::Value =
-                            serde_json::from_slice(&bytes[end + 4..end + 4 + length]).unwrap();
-                        sender.send(body).unwrap();
-                        break;
-                    }
-                }
-            }
+            sender.send(read_http_body(&mut stream).unwrap()).unwrap();
             let analysis = serde_json::json!({
                 "type": "course",
                 "title": "Rust",
@@ -307,30 +305,7 @@ mod tests {
         let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut bytes = Vec::new();
-            let mut buffer = [0; 4096];
-            loop {
-                let count = stream.read(&mut buffer).unwrap();
-                assert!(count > 0);
-                bytes.extend_from_slice(&buffer[..count]);
-                if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
-                    let header = String::from_utf8_lossy(&bytes[..end]);
-                    let length: usize = header
-                        .lines()
-                        .find_map(|line| {
-                            line.to_ascii_lowercase()
-                                .strip_prefix("content-length: ")
-                                .map(|value| value.parse().unwrap())
-                        })
-                        .unwrap();
-                    if bytes.len() >= end + 4 + length {
-                        let body: serde_json::Value =
-                            serde_json::from_slice(&bytes[end + 4..end + 4 + length]).unwrap();
-                        sender.send(body).unwrap();
-                        break;
-                    }
-                }
-            }
+            sender.send(read_http_body(&mut stream).unwrap()).unwrap();
             let body = serde_json::json!({"embeddings": [[0.25, 0.5, -0.75]]}).to_string();
             write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
         });

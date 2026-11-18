@@ -95,7 +95,7 @@ static ISSUE_CONTEXT_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static CITY_LINE_CONTEXT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?m)(?:^|\n)[^\n]{2,50},\s*$").unwrap()
+    Regex::new(r"(?:^|\n)[^\n]{2,50},[ \t]*$").unwrap()
 });
 
 static LABELED_WORKLOAD_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -332,7 +332,7 @@ fn extract_validation_url(text: &str) -> Option<String> {
     for found in URL_RE.find_iter(text) {
         let cleaned = found
             .as_str()
-            .trim_end_matches(|c: char| matches!(c, '.' | ',' | ';' | ')' | ']' | '"' | '\''));
+            .trim_end_matches(['.', ',', ';', ')', ']', '"', '\'']);
         if cleaned.is_empty() {
             continue;
         }
@@ -353,7 +353,7 @@ fn extract_validation_url(text: &str) -> Option<String> {
 fn extract_validation_code(text: &str) -> Option<String> {
     for cap in VALIDATION_CODE_RE.captures_iter(text) {
         let candidate = cap[1]
-            .trim_end_matches(|c: char| matches!(c, '.' | ',' | ';' | ')' | ']' | '"' | '\''));
+            .trim_end_matches(['.', ',', ';', ')', ']', '"', '\'']);
         if candidate.len() >= 4
             && candidate
                 .chars()
@@ -447,5 +447,19 @@ mod tests {
             extracted.validation_url.as_deref(),
             Some("https://example.org/certificates/42")
         );
+    }
+
+    #[test]
+    fn ignores_earlier_comma_lines_for_issue_date_and_handles_cross_month_ranges() {
+        let text = "Pelotas, RS,\nEvento realizado de 28/11/2025 a 02/12/2025.\nEmitido em 10/12/2025.\nDuração de 12,5h.";
+        let extracted = extract_with_regex(text);
+        assert_eq!(extracted.start_date.as_deref(), Some("2025-11-28"));
+        assert_eq!(extracted.end_date.as_deref(), Some("2025-12-02"));
+        assert_eq!(extracted.issue_date.as_deref(), Some("2025-12-10"));
+        assert_eq!(extracted.workload_hours, Some(12.5));
+
+        let non_city_comma = "Certificamos que Maria, aluna regular,\nparticipou em 01/03/2025.\nEmitido em 15/03/2025.";
+        let extracted_non_city = extract_with_regex(non_city_comma);
+        assert_eq!(extracted_non_city.issue_date.as_deref(), Some("2025-03-15"));
     }
 }
