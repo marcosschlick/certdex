@@ -38,7 +38,7 @@ type PdfReading = {
 
 function Documents() {
   const [formValues, setFormValues] = useState<DocumentForm>(emptyDocumentForm);
-  const editedFields = useRef(new Set<keyof DocumentForm>());
+  const editedFields = useRef(new Set<string>());
   const [fileName, setFileName] = useState("");
   const [fileStatus, setFileStatus] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -158,7 +158,9 @@ function Documents() {
           const analysisResult = await window.__TAURI__.core.invoke<DocumentAnalysis>("analyze_pdf_text", { text: result.text });
           if (selected === selection.current) {
             setAnalysis(analysisResult);
-            setFormValues((current) => applyDocumentAnalysis(current, editedFields.current, analysisResult));
+            setFormValues((current) => applyDocumentAnalysis(current, editedFields.current as Set<keyof DocumentForm>, analysisResult));
+            if (!editedFields.current.has("organization")) setOrganization(analysisResult.organization ?? "");
+            if (!editedFields.current.has("event")) setAcademicEvent(analysisResult.event ?? "");
             setAnalysisStatus("Analysis complete. Review the fields before registering the document.");
           }
         } catch (error) {
@@ -250,7 +252,7 @@ function Documents() {
     setReadingStatus("");
     setAnalysis(null);
     setAnalysisStatus("");
-    editedFields.current = new Set(Object.keys(emptyDocumentForm) as (keyof DocumentForm)[]);
+    editedFields.current = new Set([...Object.keys(emptyDocumentForm), "organization", "event"]);
     setFormValues({ type: document.type, title: document.title ?? "", role: document.role ?? "", issue_date: document.issue_date ?? "", start_date: document.start_date ?? "", end_date: document.end_date ?? "", workload_hours: document.workload_hours?.toString() ?? "", city: document.city ?? "", country: document.country ?? "", validation_code: document.validation_code ?? "", validation_url: document.validation_url ?? "" });
     setOrganization(document.organization ?? "");
     setAcademicEvent(document.event ?? "");
@@ -349,8 +351,8 @@ function Documents() {
           <label><span>Country</span><input name="country" value={formValues.country} onChange={handleFieldChange} /></label>
           <label><span>Validation code</span><input name="validation_code" value={formValues.validation_code} onChange={handleFieldChange} /></label>
           <label className="profile-field-wide"><span>Validation URL</span><input name="validation_url" value={formValues.validation_url} onChange={handleFieldChange} type="url" /></label>
-          <label><span>Organization</span><input list="organization-options" value={organization} onChange={(event) => setOrganization(event.target.value)} /></label>
-          <label><span>Event</span><input list="event-options" value={academicEvent} onChange={(event) => setAcademicEvent(event.target.value)} /></label>
+          <label><span>Organization</span><input list="organization-options" value={organization} onChange={(event) => { editedFields.current.add("organization"); setOrganization(event.target.value); }} /></label>
+          <label><span>Event</span><input list="event-options" value={academicEvent} onChange={(event) => { editedFields.current.add("event"); setAcademicEvent(event.target.value); }} /></label>
           <datalist id="organization-options">{options.organizations.map((name) => <option key={name} value={name} />)}</datalist>
           <datalist id="event-options">{options.events.map((name) => <option key={name} value={name} />)}</datalist>
           <datalist id="people-options">{options.people.map((name) => <option key={name} value={name} />)}</datalist>

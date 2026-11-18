@@ -343,6 +343,7 @@ name = "certdex"
 version = "0.1.0"
 dependencies = [
  "image",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

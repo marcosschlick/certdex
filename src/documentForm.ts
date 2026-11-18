@@ -12,7 +12,12 @@ export type DocumentForm = {
   validation_url: string;
 };
 
-export type DocumentAnalysis = { [Field in keyof DocumentForm]: Field extends "workload_hours" ? number | null : string | null };
+export type DocumentAnalysis = {
+  [Field in keyof DocumentForm]: Field extends "workload_hours" ? number | null : string | null;
+} & {
+  organization?: string | null;
+  event?: string | null;
+};
 
 export const emptyDocumentForm: DocumentForm = {
   type: "", title: "", role: "", issue_date: "", start_date: "", end_date: "",

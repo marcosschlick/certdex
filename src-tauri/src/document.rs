@@ -1014,7 +1014,7 @@ fn document_year(date: Option<&str>) -> &str {
     date.and_then(|value| value.get(..4)).unwrap_or("unknown")
 }
 
-fn is_valid_date(value: &str) -> bool {
+pub(crate) fn is_valid_date(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.len() != 10
         || bytes[4] != b'-'

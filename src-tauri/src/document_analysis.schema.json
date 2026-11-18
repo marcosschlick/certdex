@@ -5,14 +5,8 @@
     "type",
     "title",
     "role",
-    "issue_date",
-    "start_date",
-    "end_date",
-    "workload_hours",
-    "city",
-    "country",
-    "validation_code",
-    "validation_url"
+    "organization",
+    "event"
   ],
   "properties": {
     "type": {
@@ -21,13 +15,7 @@
     },
     "title": { "type": ["string", "null"] },
     "role": { "type": ["string", "null"] },
-    "issue_date": { "type": ["string", "null"] },
-    "start_date": { "type": ["string", "null"] },
-    "end_date": { "type": ["string", "null"] },
-    "workload_hours": { "type": ["number", "null"] },
-    "city": { "type": ["string", "null"] },
-    "country": { "type": ["string", "null"] },
-    "validation_code": { "type": ["string", "null"] },
-    "validation_url": { "type": ["string", "null"] }
+    "organization": { "type": ["string", "null"] },
+    "event": { "type": ["string", "null"] }
   }
 }

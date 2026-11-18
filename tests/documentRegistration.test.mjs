@@ -248,10 +248,15 @@ test("late analysis preserves manually edited fields", async () => {
   const processing = fileInput(view).props.onChange({ target: { files: [pdf("manual.pdf")] } });
   await new Promise(setImmediate);
   titleInput(view).props.onChange({ target: { name: "title", value: "Manual title" } });
-  pending.resolve({ title: "Suggested title", country: "Brazil" });
+  const orgInput = view.find((node) => node.type === "input" && node.props.list === "organization-options");
+  const eventInput = view.find((node) => node.type === "input" && node.props.list === "event-options");
+  orgInput.props.onChange({ target: { value: "Manual Org" } });
+  pending.resolve({ title: "Suggested title", country: "Brazil", organization: "IFSul", event: "Tech Week" });
   await processing;
   assert.equal(titleInput(view).props.value, "Manual title");
   assert.equal(view.find((node) => node.type === "input" && node.props.name === "country").props.value, "Brazil");
+  assert.equal(view.find((node) => node.type === "input" && node.props.list === "organization-options").props.value, "Manual Org");
+  assert.equal(view.find((node) => node.type === "input" && node.props.list === "event-options").props.value, "Tech Week");
 });
 
 test("changing PDF, editing, cancelling and unmounting ignore previous analysis", async () => {

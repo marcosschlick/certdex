@@ -6,6 +6,7 @@ mod managed_file;
 pub mod ollama;
 pub mod pdf;
 mod profile;
+mod regex_extraction;
 
 use tauri::Manager;
 
